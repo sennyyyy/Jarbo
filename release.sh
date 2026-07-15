@@ -11,9 +11,14 @@ fi
 
 VERSION="$1"
 TAG="v$VERSION"
+NOTES="release-notes/$TAG.md"
 if git rev-parse "$TAG" >/dev/null 2>&1; then
   print -u2 "Release $TAG already exists."
   exit 65
+fi
+if [[ ! -f "$NOTES" ]]; then
+  print -u2 "Missing $NOTES. Add Working and Known limitations sections before publishing."
+  exit 67
 fi
 if ! git remote get-url origin >/dev/null 2>&1; then
   print -u2 "No origin remote is configured. Add one with: git remote add origin <repository-url>"
@@ -29,9 +34,9 @@ NEXT_BUILD=$((CURRENT_BUILD + 1))
 ARCHIVE="dist/Jarbo-$VERSION.zip"
 ditto -c -k --norsrc --keepParent dist/Jarbo.app "$ARCHIVE"
 
-git add .gitignore Info.plist Package.swift README.md Sources build-app.sh patch-sdk-interfaces.sh release.sh
+git add .github .gitignore Info.plist Package.swift README.md Sources build-app.sh patch-sdk-interfaces.sh release-notes release.sh
 git commit -m "Release $TAG"
-git tag -a "$TAG" -m "Jarbo $VERSION"
+git tag -a "$TAG" -F "$NOTES"
 git push origin HEAD
 git push origin "$TAG"
 

@@ -22,10 +22,10 @@ System automation requires macOS Accessibility permission. Shell commands run on
 
 ## Publishing releases
 
-After configuring an `origin` Git remote, publish a new version with:
+Create `release-notes/v1.0.2.md` with **Working** and **Known limitations** sections, then publish with:
 
 ```bash
 ./release.sh 1.0.2
 ```
 
-The release helper updates the app version and build number, builds and signs the app, creates a versioned zip, commits the source, tags the commit, and pushes both the commit and tag. The current initial release is `v1.0.1`.
+The release helper updates the app version and build number, builds and signs the app, creates a versioned zip, commits the source and notes, tags the commit, and pushes both the commit and tag. GitHub Actions then creates a GitHub Release from that version's notes. The current initial release is `v1.0.1`.
