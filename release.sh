@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT="${0:A:h}"
 cd "$ROOT"
+if [[ -d "$ROOT/.tools/gh-config" ]]; then
+  export GH_CONFIG_DIR="${GH_CONFIG_DIR:-$ROOT/.tools/gh-config}"
+fi
 
 if [[ $# -ne 1 || ! "$1" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]]; then
   print -u2 "Usage: ./release.sh <major.minor.patch>"
@@ -39,6 +42,17 @@ git commit -m "Release $TAG"
 git tag -a "$TAG" -F "$NOTES"
 git push origin HEAD
 git push origin "$TAG"
+
+GH_BIN="${GH_BIN:-$ROOT/.tools/gh/gh_2.94.0_macOS_arm64/bin/gh}"
+if [[ -x "$GH_BIN" ]]; then
+  for attempt in {1..12}; do
+    if "$GH_BIN" release view "$TAG" >/dev/null 2>&1; then break; fi
+    sleep 5
+  done
+  "$GH_BIN" release upload "$TAG" "$ARCHIVE" --clobber
+else
+  print "GitHub CLI is unavailable; the release notes were published without the app archive."
+fi
 
 print "Published $TAG"
 print "$ARCHIVE"
