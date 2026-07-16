@@ -44,14 +44,23 @@ enum HandRole: String, Codable, CaseIterable, Identifiable {
 }
 enum GestureKind: String, Codable, CaseIterable, Identifiable {
   case point = "Point"
+  case pointLeft = "Point left"
+  case pointRight = "Point right"
+  case pointUp = "Point up"
+  case pointDown = "Point down"
   case pinch = "Pinch"
   case middlePinch = "Middle pinch"
   case fist = "Fist"
   case openPalm = "Open palm"
   case peace = "Peace"
+  case threeFingers = "Three fingers"
   case thumbsUp = "Thumbs up"
+  case thumbsDown = "Thumbs down"
   case swipeLeft = "Swipe left"
   case swipeRight = "Swipe right"
+  case customA = "Custom A"
+  case customB = "Custom B"
+  case customC = "Custom C"
   var id: String { rawValue }
 }
 enum ActionKind: String, Codable, CaseIterable, Identifiable {
@@ -88,6 +97,11 @@ struct ActionBinding: Identifiable, Codable, Hashable {
   var value: String = ""
   var enabled = true
 }
+struct HandPoseTemplate: Identifiable, Codable, Hashable {
+  var id: GestureKind { gesture }
+  var gesture: GestureKind
+  var features: [Double]
+}
 struct WidgetPosition: Codable {
   var x: Double
   var y: Double
@@ -110,7 +124,8 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
   @Published var leftRole: HandRole = .pointer { didSet { save() } }
   @Published var rightRole: HandRole = .controls { didSet { save() } }
   @Published var bindings: [ActionBinding] = AppState.defaults { didSet { save() } }
-  @Published var pointerSensitivity = 1.0 { didSet { save() } }
+  @Published var pointerSensitivity = 0.32 { didSet { save() } }
+  @Published var handPoseTemplates: [HandPoseTemplate] = [] { didSet { save() } }
   @Published var notes = "Welcome back. Jarbo systems are online." { didSet { save() } }
   @Published var showHUD = true
   @Published var launchComplete = false
@@ -121,9 +136,13 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     .init(name: "Context click", hand: .left, gesture: .middlePinch, action: .rightClick),
     .init(name: "Next desktop", hand: .right, gesture: .swipeLeft, action: .spaceRight),
     .init(name: "Previous desktop", hand: .right, gesture: .swipeRight, action: .spaceLeft),
-    .init(name: "Mission Control", hand: .right, gesture: .openPalm, action: .missionControl),
+    .init(name: "Mission Control", hand: .right, gesture: .peace, action: .missionControl),
     .init(name: "Play / pause", hand: .right, gesture: .fist, action: .playPause),
     .init(name: "Volume up", hand: .right, gesture: .thumbsUp, action: .volumeUp),
+    .init(name: "Volume down", hand: .right, gesture: .thumbsDown, action: .volumeDown),
+    .init(name: "Previous track", hand: .right, gesture: .pointLeft, action: .previousTrack),
+    .init(name: "Next track", hand: .right, gesture: .pointRight, action: .nextTrack),
+    .init(name: "App Expose", hand: .right, gesture: .threeFingers, action: .appExpose),
   ]
   init() { load() }
   func restoreEssentialControls() {
@@ -131,6 +150,14 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     rightRole = .controls
     bindings = AppState.defaults
     log("ESSENTIAL HAND CONTROLS RESTORED")
+  }
+  func setTemplate(_ features: [Double], for gesture: GestureKind) {
+    handPoseTemplates.removeAll { $0.gesture == gesture }
+    handPoseTemplates.append(.init(gesture: gesture, features: features))
+    log("CAPTURED \(gesture.rawValue.uppercased())")
+  }
+  func removeTemplate(for gesture: GestureKind) {
+    handPoseTemplates.removeAll { $0.gesture == gesture }
   }
   func log(_ text: String) {
     commandLog.insert("\(Date.now.formatted(date: .omitted, time: .standard))  \(text)", at: 0)
@@ -143,6 +170,7 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     var rightRole: HandRole
     var bindings: [ActionBinding]
     var pointerSensitivity: Double?
+    var handPoseTemplates: [HandPoseTemplate]?
     var notes: String
   }
   private var saveURL: URL {
@@ -157,25 +185,26 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     leftRole = s.leftRole
     rightRole = s.rightRole
     bindings = migrate(s.bindings, from: s.schemaVersion ?? 0)
-    pointerSensitivity = s.pointerSensitivity ?? 1
+    let savedSensitivity = s.pointerSensitivity ?? 0.32
+    pointerSensitivity = (s.schemaVersion ?? 0) < 3 ? min(savedSensitivity, 0.32) : savedSensitivity
+    handPoseTemplates = s.handPoseTemplates ?? []
     notes = s.notes
   }
   private func migrate(_ saved: [ActionBinding], from schema: Int) -> [ActionBinding] {
-    guard schema < 2 else { return saved }
+    guard schema < 3 else { return saved }
     var result = saved.filter { $0.action != .spaceLeft && $0.action != .spaceRight }
-    for essential in AppState.defaults
-    where
-      essential.action == .leftClick || essential.action == .rightClick
-      || essential.action == .spaceLeft || essential.action == .spaceRight
-    {
+    // Open palm must stay unbound by default because it is the pose used to start a swipe.
+    result.removeAll { $0.gesture == .openPalm && $0.action == .missionControl }
+    for essential in AppState.defaults {
       if !result.contains(where: { $0.action == essential.action }) { result.append(essential) }
     }
     return result
   }
   private func save() {
     let s = Saved(
-      schemaVersion: 2, theme: theme, leftRole: leftRole, rightRole: rightRole,
-      bindings: bindings, pointerSensitivity: pointerSensitivity, notes: notes)
+      schemaVersion: 3, theme: theme, leftRole: leftRole, rightRole: rightRole,
+      bindings: bindings, pointerSensitivity: pointerSensitivity,
+      handPoseTemplates: handPoseTemplates, notes: notes)
     try? FileManager.default.createDirectory(
       at: saveURL.deletingLastPathComponent(), withIntermediateDirectories: true)
     if let data = try? JSONEncoder().encode(s) { try? data.write(to: saveURL, options: .atomic) }

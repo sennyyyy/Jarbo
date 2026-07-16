@@ -16,6 +16,7 @@ import Foundation
   private var pointerTimeout: DispatchWorkItem?
   private var permissionTimer: Timer?
   private var lastAccessWarning = Date.distantPast
+  private var heldButtons: [CGMouseButton: CGPoint] = [:]
   init() {
     refreshAccessibility()
     permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) {
@@ -31,8 +32,8 @@ import Foundation
     switch binding.action {
     case .leftClick: mouse(.left, at: point)
     case .rightClick: mouse(.right, at: point)
-    case .spaceLeft: key(123, flags: .maskControl)
-    case .spaceRight: key(124, flags: .maskControl)
+    case .spaceLeft: shortcut(123, modifier: 59, label: "DESKTOP LEFT")
+    case .spaceRight: shortcut(124, modifier: 59, label: "DESKTOP RIGHT")
     case .missionControl: key(126, flags: .maskControl)
     case .appExpose: key(125, flags: .maskControl)
     case .showDesktop: key(103, flags: [])
@@ -65,6 +66,22 @@ import Foundation
       NotificationCenter.default.post(name: .jarboGenerateImage, object: binding.value)
     }
   }
+  func begin(_ binding: ActionBinding, at point: CGPoint? = nil) {
+    guard binding.enabled else { return }
+    state?.log("\(binding.hand.rawValue) · \(binding.name)")
+    switch binding.action {
+    case .leftClick: mouseDown(.left, at: point)
+    case .rightClick: mouseDown(.right, at: point)
+    default: execute(binding, at: point)
+    }
+  }
+  func end(_ binding: ActionBinding) {
+    switch binding.action {
+    case .leftClick: mouseUp(.left)
+    case .rightClick: mouseUp(.right)
+    default: break
+    }
+  }
   func movePointer(to normalized: CGPoint) {
     let frame = NSScreen.main?.frame ?? .zero
     guard frame.width > 0, frame.height > 0, ensureAccessibility(for: "POINTER") else { return }
@@ -86,15 +103,15 @@ import Foundation
       filteredDelta = .zero
       return
     }
-    let deadzone: CGFloat = 0.0018
+    let deadzone: CGFloat = 0.0026
     let dx = abs(raw.x) < deadzone ? 0 : raw.x
     let dy = abs(raw.y) < deadzone ? 0 : raw.y
     filteredDelta = CGPoint(
-      x: filteredDelta.x * 0.48 + dx * 0.52,
-      y: filteredDelta.y * 0.48 + dy * 0.52)
+      x: filteredDelta.x * 0.68 + dx * 0.32,
+      y: filteredDelta.y * 0.68 + dy * 0.32)
     let speed = hypot(filteredDelta.x, filteredDelta.y)
-    let sensitivity = CGFloat(min(max(sensitivityProvider?() ?? 1, 0.55), 1.8))
-    let gain = min(4.8, (1.65 + speed * 58) * sensitivity)
+    let sensitivity = CGFloat(min(max(sensitivityProvider?() ?? 0.32, 0.15), 1.2))
+    let gain = min(2.25, (0.72 + speed * 26) * sensitivity)
     let previous = pointerPosition ?? currentCursor
     let next = CGPoint(
       x: min(max(frame.minX, previous.x + filteredDelta.x * frame.width * gain), frame.maxX - 1),
@@ -102,9 +119,13 @@ import Foundation
     pointerPosition = next
     let source = CGEventSource(stateID: .hidSystemState)
     source?.localEventsSuppressionInterval = 0
+    let dragButton = heldButtons.keys.first
+    let moveType: CGEventType =
+      dragButton == .left
+      ? .leftMouseDragged : (dragButton == .right ? .rightMouseDragged : .mouseMoved)
     CGEvent(
-      mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: next,
-      mouseButton: .left)?.post(tap: .cghidEventTap)
+      mouseEventSource: source, mouseType: moveType, mouseCursorPosition: next,
+      mouseButton: dragButton ?? .left)?.post(tap: .cghidEventTap)
     pointerOverlay.show(at: next, screenHeight: frame.height)
     lastOutput = "POINTER ACTIVE · RELATIVE MODE"
     armPointerTimeout()
@@ -167,6 +188,36 @@ import Foundation
     upEvent?.post(tap: .cghidEventTap)
     lastOutput = button == .left ? "LEFT CLICK SENT" : "RIGHT CLICK SENT"
   }
+  private func mouseDown(_ button: CGMouseButton, at point: CGPoint?) {
+    guard heldButtons[button] == nil,
+      ensureAccessibility(for: button == .left ? "LEFT HOLD" : "RIGHT HOLD")
+    else { return }
+    let screen = point ?? pointerPosition ?? CGEvent(source: nil)?.location ?? .zero
+    let type: CGEventType = button == .left ? .leftMouseDown : .rightMouseDown
+    let source = CGEventSource(stateID: .hidSystemState)
+    source?.localEventsSuppressionInterval = 0
+    let event = CGEvent(
+      mouseEventSource: source, mouseType: type, mouseCursorPosition: screen, mouseButton: button)
+    event?.setIntegerValueField(.mouseEventClickState, value: 1)
+    event?.post(tap: .cghidEventTap)
+    heldButtons[button] = screen
+    lastOutput = button == .left ? "LEFT CLICK HELD · RELEASE PINCH TO DROP" : "RIGHT CLICK HELD"
+  }
+  private func mouseUp(_ button: CGMouseButton) {
+    guard heldButtons.removeValue(forKey: button) != nil else { return }
+    let screen = pointerPosition ?? CGEvent(source: nil)?.location ?? .zero
+    let type: CGEventType = button == .left ? .leftMouseUp : .rightMouseUp
+    let source = CGEventSource(stateID: .hidSystemState)
+    source?.localEventsSuppressionInterval = 0
+    let event = CGEvent(
+      mouseEventSource: source, mouseType: type, mouseCursorPosition: screen, mouseButton: button)
+    event?.setIntegerValueField(.mouseEventClickState, value: 1)
+    event?.post(tap: .cghidEventTap)
+    lastOutput = button == .left ? "LEFT CLICK RELEASED" : "RIGHT CLICK RELEASED"
+  }
+  func releaseAllMouseButtons() {
+    for button in Array(heldButtons.keys) { mouseUp(button) }
+  }
   private func key(_ code: CGKeyCode, flags: CGEventFlags) {
     guard ensureAccessibility(for: "KEYBOARD CONTROL") else { return }
     let source = CGEventSource(stateID: .hidSystemState)
@@ -178,6 +229,24 @@ import Foundation
     u?.flags = flags
     u?.post(tap: .cghidEventTap)
     lastOutput = "KEYBOARD CONTROL SENT"
+  }
+  private func shortcut(_ code: CGKeyCode, modifier: CGKeyCode, label: String) {
+    guard ensureAccessibility(for: label) else { return }
+    let source = CGEventSource(stateID: .hidSystemState)
+    source?.localEventsSuppressionInterval = 0
+    let modifierDown = CGEvent(keyboardEventSource: source, virtualKey: modifier, keyDown: true)
+    let keyDown = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)
+    let keyUp = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)
+    let modifierUp = CGEvent(keyboardEventSource: source, virtualKey: modifier, keyDown: false)
+    modifierDown?.flags = .maskControl
+    keyDown?.flags = .maskControl
+    keyUp?.flags = .maskControl
+    modifierUp?.flags = []
+    modifierDown?.post(tap: .cghidEventTap)
+    keyDown?.post(tap: .cghidEventTap)
+    keyUp?.post(tap: .cghidEventTap)
+    modifierUp?.post(tap: .cghidEventTap)
+    lastOutput = "\(label) SENT · CONTROL + ARROW"
   }
   private func mediaKey(_ key: Int) {
     let script: String

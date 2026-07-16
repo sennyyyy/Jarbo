@@ -17,6 +17,7 @@ final class HandTrackingService: NSObject, ObservableObject,
   @Published var running = false
   var roleProvider: (() -> (HandRole, HandRole))?
   var bindingsProvider: (() -> [ActionBinding])?
+  var templatesProvider: (() -> [HandPoseTemplate])?
   var automation: AutomationService?
   private let queue = DispatchQueue(label: "jarbo.vision", qos: .userInteractive)
   private var smooth: [HandSide: [VNHumanHandPoseObservation.JointName: CGPoint]] = [:]
@@ -26,6 +27,8 @@ final class HandTrackingService: NSObject, ObservableObject,
   private var lastSwipe: [HandSide: Date] = [:]
   private var gestureCandidate: [HandSide: (GestureKind, Int)] = [:]
   private var activeGesture: [HandSide: GestureKind] = [:]
+  private var activeBindings: [HandSide: [ActionBinding]] = [:]
+  private var missingFrames: [HandSide: Int] = [:]
   func start() {
     guard !running else { return }
     switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -38,6 +41,8 @@ final class HandTrackingService: NSObject, ObservableObject,
   func stop() {
     session.stopRunning()
     DispatchQueue.main.async {
+      self.releaseControls(for: .left)
+      self.releaseControls(for: .right)
       self.running = false
       self.hands = []
     }
@@ -120,7 +125,19 @@ final class HandTrackingService: NSObject, ObservableObject,
       tracked.append(.init(id: side, points: points, gesture: gesture, confidence: confidence))
       dispatch(side: side, gesture: gesture, points: points)
     }
-    DispatchQueue.main.async { self.hands = tracked }
+    let seen = Set(tracked.map(\.id))
+    DispatchQueue.main.async {
+      self.hands = tracked
+      for side in HandSide.allCases {
+        if seen.contains(side) {
+          self.missingFrames[side] = 0
+        } else {
+          let count = (self.missingFrames[side] ?? 0) + 1
+          self.missingFrames[side] = count
+          if count == 3 { self.releaseControls(for: side) }
+        }
+      }
+    }
   }
   private func inferSide(
     _ observation: VNHumanHandPoseObservation,
@@ -181,16 +198,33 @@ final class HandTrackingService: NSObject, ObservableObject,
     {
       return swipe
     }
+    if let custom = closestTemplate(to: p) { return custom }
     if let tip = p[.thumbTip], let mp = p[.thumbMP], p[.wrist] != nil,
       tip.y < mp.y - palm * 0.13, d(.thumbTip, .wrist) > d(.thumbMP, .wrist) * 1.14,
       extendedCount <= 1
     {
       return .thumbsUp
     }
+    if let tip = p[.thumbTip], let mp = p[.thumbMP], p[.wrist] != nil,
+      tip.y > mp.y + palm * 0.13, d(.thumbTip, .wrist) > d(.thumbMP, .wrist) * 1.14,
+      extendedCount <= 1
+    {
+      return .thumbsDown
+    }
     if extended == [false, false, false, false] { return .fist }
     if extended == [true, true, true, true] { return .openPalm }
-    if extended == [true, false, false, false] { return .point }
+    if extended == [true, false, false, false] {
+      guard let tip = p[.indexTip], let base = p[.indexMCP] else { return .point }
+      let dx = tip.x - base.x
+      let dy = tip.y - base.y
+      if abs(dx) > abs(dy) * 1.05, abs(dx) > palm * 0.42 {
+        return dx < 0 ? .pointLeft : .pointRight
+      }
+      if abs(dy) > palm * 0.42 { return dy < 0 ? .pointUp : .pointDown }
+      return .point
+    }
     if extended == [true, true, false, false] { return .peace }
+    if extended == [true, true, true, false] { return .threeFingers }
     return .point
   }
   private func detectSwipe(_ wrist: CGPoint, side: HandSide) -> GestureKind? {
@@ -204,7 +238,7 @@ final class HandTrackingService: NSObject, ObservableObject,
     else { return nil }
     let dx = wrist.x - first.1.x
     let dy = wrist.y - first.1.y
-    guard abs(dx) > 0.065, abs(dy) < 0.11 else { return nil }
+    guard abs(dx) > 0.050, abs(dy) < max(0.10, abs(dx) * 0.85) else { return nil }
     lastSwipe[side] = now
     history[side] = []
     return dx > 0 ? .swipeRight : .swipeLeft
@@ -216,12 +250,16 @@ final class HandTrackingService: NSObject, ObservableObject,
       let roles = self.roleProvider?()
       let role = side == .left ? roles?.0 : roles?.1
       if role == .pointer,
-        gesture == .point || gesture == .pinch || gesture == .middlePinch,
+        [.point, .pointLeft, .pointRight, .pointUp, .pointDown, .pinch, .middlePinch]
+          .contains(gesture),
         let point = points[.indexTip]
       {
         self.automation?.movePointer(to: point)
       }
-      guard role != .disabled else { return }
+      guard role != .disabled else {
+        self.releaseControls(for: side)
+        return
+      }
       let previous = self.gestureCandidate[side]
       let frames = previous?.0 == gesture ? (previous?.1 ?? 0) + 1 : 1
       self.gestureCandidate[side] = (gesture, frames)
@@ -229,10 +267,65 @@ final class HandTrackingService: NSObject, ObservableObject,
         gesture == .pinch || gesture == .middlePinch || gesture == .swipeLeft
         || gesture == .swipeRight
       guard frames >= (immediate ? 1 : 2), self.activeGesture[side] != gesture else { return }
+      self.releaseControls(for: side)
       self.activeGesture[side] = gesture
-      for b in self.bindingsProvider?().filter({
-        $0.hand == side && $0.gesture == gesture && $0.enabled
-      }) ?? [] { self.automation?.execute(b) }
+      let bindings =
+        self.bindingsProvider?().filter({
+          $0.hand == side && $0.gesture == gesture && $0.enabled
+        }) ?? []
+      self.activeBindings[side] = bindings
+      for binding in bindings { self.automation?.begin(binding) }
     }
+  }
+  @MainActor private func releaseControls(for side: HandSide) {
+    for binding in activeBindings.removeValue(forKey: side) ?? [] { automation?.end(binding) }
+    activeGesture.removeValue(forKey: side)
+    gestureCandidate.removeValue(forKey: side)
+  }
+  func captureTemplate(for gesture: GestureKind, hand side: HandSide) -> [Double]? {
+    guard let points = hands.first(where: { $0.id == side })?.points else { return nil }
+    return Self.poseFeatures(points)
+  }
+  private func closestTemplate(
+    to points: [VNHumanHandPoseObservation.JointName: CGPoint]
+  ) -> GestureKind? {
+    guard let features = Self.poseFeatures(points) else { return nil }
+    var best: (GestureKind, Double)?
+    for template in templatesProvider?() ?? [] where template.features.count == features.count {
+      let error = zip(features, template.features).reduce(0.0) { partial, pair in
+        let delta = pair.0 - pair.1
+        return partial + delta * delta
+      }
+      let rms = sqrt(error / Double(features.count))
+      if best == nil || rms < best!.1 { best = (template.gesture, rms) }
+    }
+    return best?.1 ?? .infinity < 0.16 ? best?.0 : nil
+  }
+  private static func poseFeatures(
+    _ points: [VNHumanHandPoseObservation.JointName: CGPoint]
+  ) -> [Double]? {
+    let joints: [VNHumanHandPoseObservation.JointName] = [
+      .thumbTip, .thumbIP, .thumbMP, .thumbCMC,
+      .indexTip, .indexDIP, .indexPIP, .indexMCP,
+      .middleTip, .middleDIP, .middlePIP, .middleMCP,
+      .ringTip, .ringDIP, .ringPIP, .ringMCP,
+      .littleTip, .littleDIP, .littlePIP, .littleMCP,
+    ]
+    guard let wrist = points[.wrist], let middle = points[.middleMCP],
+      let index = points[.indexMCP], let little = points[.littleMCP]
+    else { return nil }
+    let scale = max(hypot(index.x - little.x, index.y - little.y), 0.035)
+    let angle = atan2(middle.y - wrist.y, middle.x - wrist.x) - (.pi / 2)
+    let c = cos(-angle)
+    let s = sin(-angle)
+    var result: [Double] = []
+    for joint in joints {
+      guard let point = points[joint] else { return nil }
+      let x = (point.x - wrist.x) / scale
+      let y = (point.y - wrist.y) / scale
+      result.append(Double(x * c - y * s))
+      result.append(Double(x * s + y * c))
+    }
+    return result
   }
 }

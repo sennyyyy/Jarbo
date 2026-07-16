@@ -15,12 +15,13 @@ import SwiftUI
   var statusItem: NSStatusItem!
   func applicationDidFinishLaunching(_ notification: Notification) {
     automation.state = state
-    automation.sensitivityProvider = { [weak state] in state?.pointerSensitivity ?? 1 }
+    automation.sensitivityProvider = { [weak state] in state?.pointerSensitivity ?? 0.32 }
     tracker.automation = automation
     tracker.roleProvider = { [weak state] in
       (state?.leftRole ?? .pointer, state?.rightRole ?? .controls)
     }
     tracker.bindingsProvider = { [weak state] in state?.bindings ?? [] }
+    tracker.templatesProvider = { [weak state] in state?.handPoseTemplates ?? [] }
     voice.onCommand = { [weak self] text in self?.handleVoice(text) }
     let root = ControlCenterView().environmentObject(state).environmentObject(tracker)
       .environmentObject(automation).environmentObject(monitor).environmentObject(voice)
@@ -39,6 +40,7 @@ import SwiftUI
   }
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
   func applicationWillTerminate(_ notification: Notification) {
+    automation.releaseAllMouseButtons()
     automation.deactivatePointer()
     tracker.stop()
   }

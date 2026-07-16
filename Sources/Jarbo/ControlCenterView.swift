@@ -366,6 +366,9 @@ struct LaunchIntro: View {
 
 struct BindingsEditor: View {
   @EnvironmentObject var state: AppState
+  @EnvironmentObject var tracker: HandTrackingService
+  @EnvironmentObject var automation: AutomationService
+  @State private var captureHand = HandSide.right
   @State private var draft = ActionBinding(
     name: "New command", hand: .right, gesture: .openPalm, action: .missionControl)
   var body: some View {
@@ -381,9 +384,31 @@ struct BindingsEditor: View {
       }
       HStack(spacing: 12) {
         Label("Pointer sensitivity", systemImage: "cursorarrow.motionlines")
-        Slider(value: $state.pointerSensitivity, in: 0.55...1.8, step: 0.05)
+        Slider(value: $state.pointerSensitivity, in: 0.15...1.2, step: 0.05)
         Text("\(state.pointerSensitivity, specifier: "%.2f")×").monospacedDigit().frame(width: 54)
         Text("Relative mode: lift or close the hand to clutch and reposition.")
+          .font(.caption).foregroundStyle(.secondary)
+      }
+      HStack(spacing: 10) {
+        Text("CUSTOM POSES").font(.caption.bold()).tracking(1.2)
+        Picker("Capture hand", selection: $captureHand) {
+          Text("Left hand").tag(HandSide.left)
+          Text("Right hand").tag(HandSide.right)
+        }.frame(width: 160)
+        ForEach([GestureKind.customA, .customB, .customC]) { gesture in
+          Button(
+            state.handPoseTemplates.contains(where: { $0.gesture == gesture })
+              ? "RECAPTURE \(gesture.rawValue.uppercased())"
+              : "CAPTURE \(gesture.rawValue.uppercased())"
+          ) {
+            if let features = tracker.captureTemplate(for: gesture, hand: captureHand) {
+              state.setTemplate(features, for: gesture)
+            } else {
+              state.log("CAPTURE FAILED — SHOW THE SELECTED HAND TO THE CAMERA")
+            }
+          }.buttonStyle(.bordered)
+        }
+        Text("Hold your pose in the green box, then capture it.")
           .font(.caption).foregroundStyle(.secondary)
       }
       List {
@@ -432,8 +457,21 @@ struct BindingsEditor: View {
       HStack {
         Button("RESTORE ESSENTIAL PRESETS") { state.restoreEssentialControls() }
           .buttonStyle(.borderedProminent)
-        Text("Restores left-hand pointer/click and right-hand desktop swipe controls.")
+        Text("Restores precision left-hand pointer/clicks and non-conflicting right-hand controls.")
           .font(.caption).foregroundStyle(.secondary)
+        Spacer()
+        Button("TEST LEFT CLICK") {
+          automation.execute(
+            .init(name: "Test click", hand: .left, gesture: .pinch, action: .leftClick))
+        }
+        Button("TEST DESKTOP LEFT") {
+          automation.execute(
+            .init(name: "Test desktop", hand: .right, gesture: .swipeRight, action: .spaceLeft))
+        }
+        Button("TEST DESKTOP RIGHT") {
+          automation.execute(
+            .init(name: "Test desktop", hand: .right, gesture: .swipeLeft, action: .spaceRight))
+        }
       }
       Text(
         "Shell commands and Accessibility actions run only when you explicitly bind and trigger them."
