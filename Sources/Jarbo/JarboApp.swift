@@ -21,7 +21,8 @@ import SwiftUI
       (state?.leftRole ?? .pointer, state?.rightRole ?? .controls)
     }
     tracker.bindingsProvider = { [weak state] in state?.bindings ?? [] }
-    tracker.templatesProvider = { [weak state] in state?.handPoseTemplates ?? [] }
+    tracker.templatesProvider = { [weak state] in state?.effectivePoseTemplates ?? [] }
+    tracker.motionTemplatesProvider = { [weak state] in state?.handMotionTemplates ?? [] }
     voice.onCommand = { [weak self] text in self?.handleVoice(text) }
     let root = ControlCenterView().environmentObject(state).environmentObject(tracker)
       .environmentObject(automation).environmentObject(monitor).environmentObject(voice)

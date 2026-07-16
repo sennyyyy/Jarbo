@@ -42,7 +42,13 @@ enum HandRole: String, Codable, CaseIterable, Identifiable {
   case disabled = "Disabled"
   var id: String { rawValue }
 }
+enum GestureCategory: String, CaseIterable {
+  case staticPose = "Static"
+  case motion = "Dynamic"
+  case orientation = "Orientation"
+}
 enum GestureKind: String, Codable, CaseIterable, Identifiable {
+  // Static configurations (legacy raw values are retained so saved v1 configurations decode).
   case point = "Point"
   case pointLeft = "Point left"
   case pointRight = "Point right"
@@ -54,14 +60,90 @@ enum GestureKind: String, Codable, CaseIterable, Identifiable {
   case openPalm = "Open palm"
   case peace = "Peace"
   case threeFingers = "Three fingers"
+  case fourFingers = "Four"
+  case pinky = "Pinky"
+  case rock = "Rock"
+  case shaka = "Shaka"
+  case okSign = "OK"
+  case italianPinch = "Italian Pinch"
+  case fingerGun = "Finger Gun"
+  case lShape = "L Shape"
+  case vulcanSalute = "Vulcan Salute"
+  case crossedFingers = "Crossed Fingers"
+  case spiderMan = "Spider-Man"
+  case thumbRing = "Thumb + Ring"
   case thumbsUp = "Thumbs up"
   case thumbsDown = "Thumbs down"
+  // Dynamic trajectories.
   case swipeLeft = "Swipe left"
   case swipeRight = "Swipe right"
+  case swipeUp = "Swipe Up"
+  case swipeDown = "Swipe Down"
+  case pushForward = "Push Forward"
+  case pullBack = "Pull Back"
+  case waveLeftRight = "Wave Left-Right"
+  case waveUpDown = "Wave Up-Down"
+  case circleClockwise = "Circle Clockwise"
+  case circleCounterclockwise = "Circle Counterclockwise"
+  case drawTriangle = "Draw Triangle"
+  case drawSquare = "Draw Square"
+  case drawCircle = "Draw Circle"
+  case drawCheckmark = "Draw Checkmark"
+  case drawX = "Draw X"
+  case doubleAirTap = "Double Tap (air)"
+  case airClick = "Air Click"
+  case grab = "Grab"
+  case release = "Release"
+  case shakeNo = "Shake No"
+  // Wrist/hand orientations.
+  case palmCamera = "Palm Facing Camera"
+  case backCamera = "Back of Hand Facing Camera"
+  case palmUp = "Palm Up"
+  case palmDown = "Palm Down"
+  case palmLeft = "Palm Left"
+  case palmRight = "Palm Right"
+  case fingersUp = "Fingers Point Up"
+  case fingersDown = "Fingers Point Down"
+  case tiltedLeft = "Hand Tilted 45° Left"
+  case tiltedRight = "Hand Tilted 45° Right"
   case customA = "Custom A"
   case customB = "Custom B"
   case customC = "Custom C"
   var id: String { rawValue }
+  var displayName: String {
+    switch self {
+    case .pinch: "Finger Heart"
+    case .middlePinch: "Thumb + Middle"
+    case .threeFingers: "Three"
+    default: rawValue
+    }
+  }
+  var category: GestureCategory {
+    switch self {
+    case .swipeLeft, .swipeRight, .swipeUp, .swipeDown, .pushForward, .pullBack,
+      .waveLeftRight, .waveUpDown, .circleClockwise, .circleCounterclockwise, .drawTriangle,
+      .drawSquare, .drawCircle, .drawCheckmark, .drawX, .doubleAirTap, .airClick, .grab,
+      .release, .shakeNo:
+      .motion
+    case .palmCamera, .backCamera, .palmUp, .palmDown, .palmLeft, .palmRight, .fingersUp,
+      .fingersDown, .tiltedLeft, .tiltedRight:
+      .orientation
+    default: .staticPose
+    }
+  }
+  static let trainingCatalog: [GestureKind] = [
+    .fist, .openPalm, .thumbsUp, .point, .peace, .threeFingers, .fourFingers, .pinky,
+    .rock, .shaka, .okSign, .pinch, .italianPinch, .fingerGun, .lShape, .vulcanSalute,
+    .crossedFingers, .spiderMan, .middlePinch, .thumbRing,
+    .swipeLeft, .swipeRight, .swipeUp, .swipeDown, .pushForward, .pullBack, .waveLeftRight,
+    .waveUpDown, .circleClockwise, .circleCounterclockwise, .drawTriangle, .drawSquare,
+    .drawCircle, .drawCheckmark, .drawX, .doubleAirTap, .airClick, .grab, .release, .shakeNo,
+    .palmCamera, .backCamera, .palmUp, .palmDown, .palmLeft, .palmRight, .fingersUp,
+    .fingersDown, .tiltedLeft, .tiltedRight,
+  ]
+  static let selectableGestures: [GestureKind] =
+    trainingCatalog
+    + [.thumbsDown, .pointLeft, .pointRight, .pointUp, .pointDown, .customA, .customB, .customC]
 }
 enum ActionKind: String, Codable, CaseIterable, Identifiable {
   case leftClick = "Left click"
@@ -102,6 +184,11 @@ struct HandPoseTemplate: Identifiable, Codable, Hashable {
   var gesture: GestureKind
   var features: [Double]
 }
+struct HandMotionTemplate: Identifiable, Codable, Hashable {
+  var id: Int { frames.hashValue ^ gesture.rawValue.hashValue }
+  var gesture: GestureKind
+  var frames: [[Double]]
+}
 struct WidgetPosition: Codable {
   var x: Double
   var y: Double
@@ -126,6 +213,8 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
   @Published var bindings: [ActionBinding] = AppState.defaults { didSet { save() } }
   @Published var pointerSensitivity = 0.5 { didSet { save() } }
   @Published var handPoseTemplates: [HandPoseTemplate] = [] { didSet { save() } }
+  @Published var handMotionTemplates: [HandMotionTemplate] = [] { didSet { save() } }
+  private(set) var bundledGesturePriors: [HandPoseTemplate] = []
   @Published var notes = "Welcome back. Jarbo systems are online." { didSet { save() } }
   @Published var showHUD = true
   @Published var launchComplete = false
@@ -144,7 +233,15 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     .init(name: "Next track", hand: .right, gesture: .pointRight, action: .nextTrack),
     .init(name: "App Expose", hand: .right, gesture: .threeFingers, action: .appExpose),
   ]
-  init() { load() }
+  init() {
+    loadBundledPriors()
+    load()
+  }
+  var effectivePoseTemplates: [HandPoseTemplate] {
+    let personallyTrained = Set(handPoseTemplates.map(\.gesture))
+    return handPoseTemplates
+      + bundledGesturePriors.filter { !personallyTrained.contains($0.gesture) }
+  }
   func restoreEssentialControls() {
     leftRole = .pointer
     rightRole = .controls
@@ -154,18 +251,31 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
   func addTrainingSample(_ features: [Double], for gesture: GestureKind) {
     handPoseTemplates.append(.init(gesture: gesture, features: features))
     let samples = handPoseTemplates.filter { $0.gesture == gesture }
-    if samples.count > 8 {
-      let removeCount = samples.count - 8
+    if samples.count > 10 {
+      let removeCount = samples.count - 10
       let removeIDs = Set(samples.prefix(removeCount).map(\.id))
       handPoseTemplates.removeAll { removeIDs.contains($0.id) }
     }
-    log("TRAINED \(gesture.rawValue.uppercased()) · \(sampleCount(for: gesture))/8 SAMPLES")
+    log("TRAINED \(gesture.displayName.uppercased()) · \(sampleCount(for: gesture))/10 SAMPLES")
+  }
+  func addMotionTrainingSample(_ frames: [[Double]], for gesture: GestureKind) {
+    handMotionTemplates.append(.init(gesture: gesture, frames: frames))
+    let samples = handMotionTemplates.filter { $0.gesture == gesture }
+    if samples.count > 10 {
+      let removeIDs = Set(samples.prefix(samples.count - 10).map(\.id))
+      handMotionTemplates.removeAll { removeIDs.contains($0.id) }
+    }
+    log("TRAINED \(gesture.displayName.uppercased()) · \(sampleCount(for: gesture))/10 SAMPLES")
   }
   func removeTemplate(for gesture: GestureKind) {
     handPoseTemplates.removeAll { $0.gesture == gesture }
+    handMotionTemplates.removeAll { $0.gesture == gesture }
   }
   func sampleCount(for gesture: GestureKind) -> Int {
-    handPoseTemplates.filter { $0.gesture == gesture }.count
+    if gesture.category == .motion {
+      return handMotionTemplates.filter { $0.gesture == gesture }.count
+    }
+    return handPoseTemplates.filter { $0.gesture == gesture }.count
   }
   func log(_ text: String) {
     commandLog.insert("\(Date.now.formatted(date: .omitted, time: .standard))  \(text)", at: 0)
@@ -179,11 +289,20 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     var bindings: [ActionBinding]
     var pointerSensitivity: Double?
     var handPoseTemplates: [HandPoseTemplate]?
+    var handMotionTemplates: [HandMotionTemplate]?
     var notes: String
   }
   private var saveURL: URL {
     FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appending(
       path: "Jarbo/config.json")
+  }
+  private func loadBundledPriors() {
+    guard let url = Bundle.main.url(forResource: "GesturePriors", withExtension: "json"),
+      let data = try? Data(contentsOf: url),
+      let priors = try? JSONDecoder().decode([HandPoseTemplate].self, from: data)
+    else { return }
+    bundledGesturePriors = priors
+    log("LOADED \(priors.count) HAGRID LANDMARK PRIORS")
   }
   private func load() {
     guard let data = try? Data(contentsOf: saveURL),
@@ -195,6 +314,7 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     bindings = migrate(s.bindings, from: s.schemaVersion ?? 0)
     pointerSensitivity = (s.schemaVersion ?? 0) < 4 ? 0.5 : (s.pointerSensitivity ?? 0.5)
     handPoseTemplates = s.handPoseTemplates ?? []
+    handMotionTemplates = s.handMotionTemplates ?? []
     notes = s.notes
   }
   private func migrate(_ saved: [ActionBinding], from schema: Int) -> [ActionBinding] {
@@ -209,9 +329,9 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
   }
   private func save() {
     let s = Saved(
-      schemaVersion: 4, theme: theme, leftRole: leftRole, rightRole: rightRole,
+      schemaVersion: 5, theme: theme, leftRole: leftRole, rightRole: rightRole,
       bindings: bindings, pointerSensitivity: pointerSensitivity,
-      handPoseTemplates: handPoseTemplates, notes: notes)
+      handPoseTemplates: handPoseTemplates, handMotionTemplates: handMotionTemplates, notes: notes)
     try? FileManager.default.createDirectory(
       at: saveURL.deletingLastPathComponent(), withIntermediateDirectories: true)
     if let data = try? JSONEncoder().encode(s) { try? data.write(to: saveURL, options: .atomic) }

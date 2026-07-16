@@ -283,9 +283,9 @@ struct HandOverlay: View {
     if let match = bindings.first(where: {
       $0.enabled && $0.hand == hand.id && $0.gesture == hand.gesture
     }) {
-      return "\(hand.gesture.rawValue.uppercased()) · \(match.action.rawValue.uppercased())"
+      return "\(hand.gesture.displayName.uppercased()) · \(match.action.rawValue.uppercased())"
     }
-    return "DETECTED · \(hand.gesture.rawValue.uppercased())"
+    return "DETECTED · \(hand.gesture.displayName.uppercased())"
   }
   private func boundingBox(in size: CGSize) -> CGRect {
     let values = Array(hand.points.values)
@@ -397,12 +397,35 @@ struct BindingsEditor: View {
           Text("Right hand").tag(HandSide.right)
         }.frame(width: 160)
         Picker("Gesture", selection: $trainingGesture) {
-          ForEach(GestureKind.allCases.filter { ![.swipeLeft, .swipeRight].contains($0) }) {
-            Text($0.rawValue).tag($0)
+          ForEach(GestureCategory.allCases, id: \.self) { category in
+            Section(category.rawValue) {
+              ForEach(GestureKind.trainingCatalog.filter { $0.category == category }) {
+                Text($0.displayName).tag($0)
+              }
+            }
+          }
+          Section("Custom") {
+            ForEach([GestureKind.customA, .customB, .customC]) {
+              Text($0.displayName).tag($0)
+            }
+          }
+          Section("Legacy controls") {
+            ForEach([
+              GestureKind.thumbsDown, .pointLeft, .pointRight, .pointUp, .pointDown,
+            ]) {
+              Text($0.displayName).tag($0)
+            }
           }
         }.frame(width: 155)
-        Button("ADD SAMPLE · \(state.sampleCount(for: trainingGesture))/8") {
-          if let features = tracker.captureTemplate(for: trainingGesture, hand: captureHand) {
+        Button(
+          "\(trainingGesture.category == .motion ? "ADD RECENT MOTION" : "ADD POSE SAMPLE") · \(state.sampleCount(for: trainingGesture))/10"
+        ) {
+          if trainingGesture.category == .motion,
+            let frames = tracker.captureRecentMotion(hand: captureHand)
+          {
+            state.addMotionTrainingSample(frames, for: trainingGesture)
+          } else if let features = tracker.captureTemplate(for: trainingGesture, hand: captureHand)
+          {
             state.addTrainingSample(features, for: trainingGesture)
           } else {
             state.log("TRAINING FAILED — SHOW THE SELECTED HAND TO THE CAMERA")
@@ -410,8 +433,12 @@ struct BindingsEditor: View {
         }.buttonStyle(.borderedProminent)
         Button("CLEAR") { state.removeTemplate(for: trainingGesture) }
           .disabled(state.sampleCount(for: trainingGesture) == 0)
-        Text("Add 3–5 natural variations of your fist, pinch, or custom pose.")
-          .font(.caption).foregroundStyle(.secondary)
+        Text(
+          trainingGesture.category == .motion
+            ? "Perform the motion, then immediately add the recent 1.3-second trajectory."
+            : "Capture ten natural variations for this gesture only."
+        )
+        .font(.caption).foregroundStyle(.secondary)
       }
       List {
         ForEach($state.bindings) { $binding in
@@ -423,7 +450,9 @@ struct BindingsEditor: View {
               Text("Right").tag(HandSide.right)
             }.frame(width: 90)
             Picker("Gesture", selection: $binding.gesture) {
-              ForEach(GestureKind.allCases) { Text($0.rawValue).tag($0) }
+              ForEach(GestureKind.selectableGestures) {
+                Text($0.displayName).tag($0)
+              }
             }.frame(width: 130)
             Picker("Action", selection: $binding.action) {
               ForEach(ActionKind.allCases) { Text($0.rawValue).tag($0) }
@@ -444,7 +473,9 @@ struct BindingsEditor: View {
           Text("Right").tag(HandSide.right)
         }
         Picker("Gesture", selection: $draft.gesture) {
-          ForEach(GestureKind.allCases) { Text($0.rawValue).tag($0) }
+          ForEach(GestureKind.selectableGestures) {
+            Text($0.displayName).tag($0)
+          }
         }
         Picker("Action", selection: $draft.action) {
           ForEach(ActionKind.allCases) { Text($0.rawValue).tag($0) }
