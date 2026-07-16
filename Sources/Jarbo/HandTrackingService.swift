@@ -17,20 +17,24 @@ final class HandTrackingService: NSObject, ObservableObject,
   @Published var running = false
   var roleProvider: (() -> (HandRole, HandRole))?
   var bindingsProvider: (() -> [ActionBinding])?
-  var templatesProvider: (() -> [HandPoseTemplate])?
+  var personalTemplatesProvider: (() -> [HandPoseTemplate])?
+  var priorTemplatesProvider: (() -> [HandPoseTemplate])?
   var motionTemplatesProvider: (() -> [HandMotionTemplate])?
   var automation: AutomationService?
   private let queue = DispatchQueue(label: "jarbo.vision", qos: .userInteractive)
   private var smooth: [HandSide: [VNHumanHandPoseObservation.JointName: CGPoint]] = [:]
   private var history: [HandSide: [(Date, CGPoint)]] = [:]
-  private var pinchState: [HandSide: (Bool, Bool)] = [:]
-  private var pinchFrames: [HandSide: (Int, Int)] = [:]
+  private var activePinch: [HandSide: GestureKind] = [:]
+  private var pinchCandidate: [HandSide: (GestureKind, Int)] = [:]
   private var lastSwipe: [HandSide: Date] = [:]
   private var gestureCandidate: [HandSide: (GestureKind, Int)] = [:]
   private var activeGesture: [HandSide: GestureKind] = [:]
   private var activeBindings: [HandSide: [ActionBinding]] = [:]
   private var missingFrames: [HandSide: Int] = [:]
   private var motionTrainingHistory: [HandSide: [(Date, [Double])]] = [:]
+  private let fingertipJoints: Set<VNHumanHandPoseObservation.JointName> = [
+    .thumbTip, .indexTip, .middleTip, .ringTip, .littleTip,
+  ]
   func start() {
     guard !running else { return }
     switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -117,7 +121,8 @@ final class HandTrackingService: NSObject, ObservableObject,
         // landscape pixel buffer, so mirror only X when converting into preview coordinates.
         let raw = CGPoint(x: 1 - p.location.x, y: 1 - p.location.y)
         let old = smooth[side]?[joint] ?? raw
-        let alpha: CGFloat = p.confidence > 0.78 ? 0.34 : 0.20
+        let alpha: CGFloat =
+          p.confidence > 0.78 ? (fingertipJoints.contains(joint) ? 0.50 : 0.32) : 0.22
         points[joint] = CGPoint(
           x: old.x + (raw.x - old.x) * alpha, y: old.y + (raw.y - old.y) * alpha)
         confidence = min(confidence, p.confidence)
@@ -171,6 +176,7 @@ final class HandTrackingService: NSObject, ObservableObject,
       return hypot(x.x - y.x, x.y - y.y)
     }
     let palm = max(d(.indexMCP, .littleMCP), d(.wrist, .middleMCP) * 0.72, 0.04)
+    if let pinch = detectFingerContact(p, side: side, palm: palm) { return pinch }
     let tips: [VNHumanHandPoseObservation.JointName] = [
       .indexTip, .middleTip, .ringTip, .littleTip,
     ]
@@ -185,40 +191,11 @@ final class HandTrackingService: NSObject, ObservableObject,
       return swipe
     }
     if let motion = closestMotionTemplate(side: side) { return motion }
-    // Personal training samples take priority over geometric fallbacks. This lets a user teach
-    // Jarbo the difference between their own fist and pinch instead of relying on one generic pose.
-    if let trained = closestTemplate(to: p) {
-      pinchState[side] = (trained == .pinch, trained == .middlePinch)
+    if let trained = closestTemplate(
+      to: p, templates: personalTemplatesProvider?() ?? [], maxError: 0.13, margin: 0.028,
+      allowContacts: true)
+    {
       return trained
-    }
-    let previous = pinchState[side] ?? (false, false)
-    let indexRatio = d(.thumbTip, .indexTip) / palm
-    let middleRatio = d(.thumbTip, .middleTip) / palm
-    let ringRatio = d(.thumbTip, .ringTip) / palm
-    var frames = pinchFrames[side] ?? (0, 0)
-    let indexReach = d(.indexTip, .wrist) / max(d(.indexMCP, .wrist), 0.02)
-    let middleReach = d(.middleTip, .wrist) / max(d(.middleMCP, .wrist), 0.02)
-    let otherOpen = extended.dropFirst().filter { $0 }.count
-    // A closed fist also places the thumb near the fingertips. Requiring finger reach or another
-    // open finger prevents that common pose from being treated as a pinch.
-    let indexPoseValid = indexReach > 1.30 && (otherOpen >= 1 || extended[0])
-    let middlePoseValid =
-      middleReach > 1.27 && (extended[0] || extended.dropFirst(2).contains(true))
-    let indexNear = indexRatio < (previous.0 ? 0.78 : 0.54) && indexPoseValid
-    let middleNear = middleRatio < (previous.1 ? 0.78 : 0.54) && middlePoseValid
-    frames.0 = indexNear ? min(frames.0 + 1, 3) : 0
-    frames.1 = middleNear ? min(frames.1 + 1, 3) : 0
-    var indexPinch = previous.0 ? indexNear : frames.0 >= 2
-    var middlePinch = previous.1 ? middleNear : frames.1 >= 2
-    if indexPinch, middlePinch {
-      if indexRatio <= middleRatio { middlePinch = false } else { indexPinch = false }
-    }
-    pinchFrames[side] = frames
-    pinchState[side] = (indexPinch, middlePinch)
-    if indexPinch { return .pinch }
-    if middlePinch { return .middlePinch }
-    if ringRatio < 0.50, d(.ringTip, .wrist) > d(.ringMCP, .wrist) * 1.24 {
-      return .thumbRing
     }
     let thumbExtended = d(.thumbTip, .wrist) > d(.thumbIP, .wrist) * 1.12
     if let tip = p[.thumbTip], let mp = p[.thumbMP], p[.wrist] != nil,
@@ -249,7 +226,63 @@ final class HandTrackingService: NSObject, ObservableObject,
     }
     if extended == [true, true, false, false] { return .peace }
     if extended == [true, true, true, false] { return .threeFingers }
-    return .point
+    if let prior = closestTemplate(
+      to: p, templates: priorTemplatesProvider?() ?? [], maxError: 0.115, margin: 0.035,
+      allowContacts: false)
+    {
+      return prior
+    }
+    return .unknown
+  }
+  private func detectFingerContact(
+    _ points: [VNHumanHandPoseObservation.JointName: CGPoint], side: HandSide, palm: CGFloat
+  ) -> GestureKind? {
+    guard let thumb = points[.thumbTip], let wrist = points[.wrist] else {
+      activePinch.removeValue(forKey: side)
+      pinchCandidate.removeValue(forKey: side)
+      return nil
+    }
+    let targets:
+      [(
+        gesture: GestureKind, tip: VNHumanHandPoseObservation.JointName,
+        mcp: VNHumanHandPoseObservation.JointName
+      )] = [
+        (.pinch, .indexTip, .indexMCP),
+        (.middlePinch, .middleTip, .middleMCP),
+        (.thumbRing, .ringTip, .ringMCP),
+      ]
+    let contacts = targets.compactMap { target -> (GestureKind, CGFloat, CGFloat, CGFloat)? in
+      guard let tip = points[target.tip], let mcp = points[target.mcp] else { return nil }
+      let ratio = hypot(thumb.x - tip.x, thumb.y - tip.y) / palm
+      let midpoint = CGPoint(x: (thumb.x + tip.x) / 2, y: (thumb.y + tip.y) / 2)
+      let midpointReach = hypot(midpoint.x - wrist.x, midpoint.y - wrist.y) / palm
+      let baseReach = max(hypot(mcp.x - wrist.x, mcp.y - wrist.y), 0.02)
+      let fingerReach = hypot(tip.x - wrist.x, tip.y - wrist.y) / baseReach
+      return (target.gesture, ratio, midpointReach, fingerReach)
+    }.sorted { $0.1 < $1.1 }
+    if let active = activePinch[side],
+      let contact = contacts.first(where: { $0.0 == active }),
+      contact.1 < 0.98, contact.2 > 1.12, contact.3 > 1.02
+    {
+      return active
+    }
+    activePinch.removeValue(forKey: side)
+    guard let best = contacts.first, best.1 < 0.72, best.2 > 1.20, best.3 > 1.05 else {
+      pinchCandidate.removeValue(forKey: side)
+      return nil
+    }
+    let secondDistance = contacts.dropFirst().first?.1 ?? 9
+    let distinctContact = secondDistance - best.1 > 0.10 || best.1 < 0.38
+    guard distinctContact else {
+      pinchCandidate.removeValue(forKey: side)
+      return nil
+    }
+    let previous = pinchCandidate[side]
+    let frames = previous?.0 == best.0 ? min((previous?.1 ?? 0) + 1, 3) : 1
+    pinchCandidate[side] = (best.0, frames)
+    guard frames >= 2 else { return nil }
+    activePinch[side] = best.0
+    return best.0
   }
   private func detectSwipe(_ wrist: CGPoint, side: HandSide) -> GestureKind? {
     var h = history[side] ?? []
@@ -284,7 +317,7 @@ final class HandTrackingService: NSObject, ObservableObject,
       let roles = self.roleProvider?()
       let role = side == .left ? roles?.0 : roles?.1
       if role == .pointer,
-        [.point, .pointLeft, .pointRight, .pointUp, .pointDown, .pinch, .middlePinch]
+        [.point, .pointLeft, .pointRight, .pointUp, .pointDown, .pinch, .middlePinch, .thumbRing]
           .contains(gesture),
         let point = points[.indexTip]
       {
@@ -294,11 +327,18 @@ final class HandTrackingService: NSObject, ObservableObject,
         self.releaseControls(for: side)
         return
       }
+      let pinchGestures: Set<GestureKind> = [.pinch, .middlePinch, .thumbRing]
+      if let active = self.activeGesture[side], pinchGestures.contains(active),
+        !pinchGestures.contains(gesture)
+      {
+        self.releaseControls(for: side)
+      }
       let previous = self.gestureCandidate[side]
       let frames = previous?.0 == gesture ? (previous?.1 ?? 0) + 1 : 1
       self.gestureCandidate[side] = (gesture, frames)
-      let immediate = gesture == .pinch || gesture == .middlePinch || gesture.category == .motion
-      guard frames >= (immediate ? 1 : 2), self.activeGesture[side] != gesture else { return }
+      let immediate = pinchGestures.contains(gesture) || gesture.category == .motion
+      let requiredFrames = immediate ? 1 : (gesture == .unknown ? 2 : 3)
+      guard frames >= requiredFrames, self.activeGesture[side] != gesture else { return }
       self.releaseControls(for: side)
       self.activeGesture[side] = gesture
       let bindings =
@@ -322,10 +362,12 @@ final class HandTrackingService: NSObject, ObservableObject,
     queue.sync { Self.normalizedMotion(motionTrainingHistory[side] ?? []) }
   }
   private func closestTemplate(
-    to points: [VNHumanHandPoseObservation.JointName: CGPoint]
+    to points: [VNHumanHandPoseObservation.JointName: CGPoint], templates: [HandPoseTemplate],
+    maxError: Double, margin: Double, allowContacts: Bool
   ) -> GestureKind? {
     var distances: [GestureKind: [Double]] = [:]
-    for template in templatesProvider?() ?? [] {
+    for template in templates
+    where allowContacts || ![.pinch, .middlePinch, .thumbRing].contains(template.gesture) {
       guard
         let features = Self.poseFeatures(
           points, preserveOrientation: template.gesture.category == .orientation),
@@ -342,8 +384,8 @@ final class HandTrackingService: NSObject, ObservableObject,
       let nearest = values.sorted().prefix(3)
       return (gesture, nearest.reduce(0, +) / Double(nearest.count))
     }.sorted { $0.1 < $1.1 }
-    guard let best = ranked.first, best.1 < 0.145 else { return nil }
-    if ranked.count > 1, ranked[1].1 - best.1 < 0.018 { return nil }
+    guard let best = ranked.first, best.1 < maxError else { return nil }
+    if ranked.count > 1, ranked[1].1 - best.1 < margin { return nil }
     return best.0
   }
   private static func poseFeatures(

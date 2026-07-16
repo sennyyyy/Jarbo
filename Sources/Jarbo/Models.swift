@@ -48,6 +48,7 @@ enum GestureCategory: String, CaseIterable {
   case orientation = "Orientation"
 }
 enum GestureKind: String, Codable, CaseIterable, Identifiable {
+  case unknown = "No gesture"
   // Static configurations (legacy raw values are retained so saved v1 configurations decode).
   case point = "Point"
   case pointLeft = "Point left"
@@ -148,6 +149,7 @@ enum GestureKind: String, Codable, CaseIterable, Identifiable {
 enum ActionKind: String, Codable, CaseIterable, Identifiable {
   case leftClick = "Left click"
   case rightClick = "Right click"
+  case middleClick = "Middle click"
   case spaceLeft = "Desktop left"
   case spaceRight = "Desktop right"
   case missionControl = "Mission Control"
@@ -223,6 +225,7 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
   static let defaults: [ActionBinding] = [
     .init(name: "Primary click", hand: .left, gesture: .pinch, action: .leftClick),
     .init(name: "Context click", hand: .left, gesture: .middlePinch, action: .rightClick),
+    .init(name: "Middle click", hand: .left, gesture: .thumbRing, action: .middleClick),
     .init(name: "Next desktop", hand: .right, gesture: .swipeLeft, action: .spaceRight),
     .init(name: "Previous desktop", hand: .right, gesture: .swipeRight, action: .spaceLeft),
     .init(name: "Mission Control", hand: .right, gesture: .peace, action: .missionControl),
@@ -318,18 +321,32 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     notes = s.notes
   }
   private func migrate(_ saved: [ActionBinding], from schema: Int) -> [ActionBinding] {
-    guard schema < 4 else { return saved }
-    var result = saved.filter { $0.action != .spaceLeft && $0.action != .spaceRight }
-    // Open palm must stay unbound by default because it is the pose used to start a swipe.
-    result.removeAll { $0.gesture == .openPalm && $0.action == .missionControl }
-    for essential in AppState.defaults {
-      if !result.contains(where: { $0.action == essential.action }) { result.append(essential) }
+    var result = saved
+    if schema < 4 {
+      result.removeAll { $0.action == .spaceLeft || $0.action == .spaceRight }
+      // Open palm must stay unbound by default because it is the pose used to start a swipe.
+      result.removeAll { $0.gesture == .openPalm && $0.action == .missionControl }
+      for essential in AppState.defaults {
+        if !result.contains(where: { $0.action == essential.action }) { result.append(essential) }
+      }
+    }
+    if schema < 7 {
+      let customRing = result.contains {
+        $0.hand == .left && $0.gesture == .thumbRing && $0.action != .middleClick
+      }
+      if customRing {
+        result.removeAll { $0.gesture == .thumbRing && $0.action == .middleClick }
+      } else if let middle = AppState.defaults.first(where: { $0.action == .middleClick }),
+        !result.contains(where: { $0.action == .middleClick })
+      {
+        result.append(middle)
+      }
     }
     return result
   }
   private func save() {
     let s = Saved(
-      schemaVersion: 5, theme: theme, leftRole: leftRole, rightRole: rightRole,
+      schemaVersion: 7, theme: theme, leftRole: leftRole, rightRole: rightRole,
       bindings: bindings, pointerSensitivity: pointerSensitivity,
       handPoseTemplates: handPoseTemplates, handMotionTemplates: handMotionTemplates, notes: notes)
     try? FileManager.default.createDirectory(

@@ -32,6 +32,7 @@ import Foundation
     switch binding.action {
     case .leftClick: mouse(.left, at: point)
     case .rightClick: mouse(.right, at: point)
+    case .middleClick: mouse(.center, at: point)
     case .spaceLeft: shortcut(123, modifier: 59, label: "DESKTOP LEFT")
     case .spaceRight: shortcut(124, modifier: 59, label: "DESKTOP RIGHT")
     case .missionControl: key(126, flags: .maskControl)
@@ -72,6 +73,7 @@ import Foundation
     switch binding.action {
     case .leftClick: mouseDown(.left, at: point)
     case .rightClick: mouseDown(.right, at: point)
+    case .middleClick: mouseDown(.center, at: point)
     default: execute(binding, at: point)
     }
   }
@@ -79,6 +81,7 @@ import Foundation
     switch binding.action {
     case .leftClick: mouseUp(.left)
     case .rightClick: mouseUp(.right)
+    case .middleClick: mouseUp(.center)
     default: break
     }
   }
@@ -122,7 +125,9 @@ import Foundation
     let dragButton = heldButtons.keys.first
     let moveType: CGEventType =
       dragButton == .left
-      ? .leftMouseDragged : (dragButton == .right ? .rightMouseDragged : .mouseMoved)
+      ? .leftMouseDragged
+      : (dragButton == .right
+        ? .rightMouseDragged : (dragButton == .center ? .otherMouseDragged : .mouseMoved))
     CGEvent(
       mouseEventSource: source, mouseType: moveType, mouseCursorPosition: next,
       mouseButton: dragButton ?? .left)?.post(tap: .cghidEventTap)
@@ -172,10 +177,12 @@ import Foundation
     return true
   }
   private func mouse(_ button: CGMouseButton, at point: CGPoint?) {
-    guard ensureAccessibility(for: button == .left ? "LEFT CLICK" : "RIGHT CLICK") else { return }
+    guard ensureAccessibility(for: mouseLabel(button, suffix: "CLICK")) else { return }
     let screen = point ?? pointerPosition ?? CGEvent(source: nil)?.location ?? .zero
-    let down: CGEventType = button == .left ? .leftMouseDown : .rightMouseDown
-    let up: CGEventType = button == .left ? .leftMouseUp : .rightMouseUp
+    let down: CGEventType =
+      button == .left ? .leftMouseDown : (button == .right ? .rightMouseDown : .otherMouseDown)
+    let up: CGEventType =
+      button == .left ? .leftMouseUp : (button == .right ? .rightMouseUp : .otherMouseUp)
     let source = CGEventSource(stateID: .hidSystemState)
     source?.localEventsSuppressionInterval = 0
     let downEvent = CGEvent(
@@ -186,14 +193,15 @@ import Foundation
     upEvent?.setIntegerValueField(.mouseEventClickState, value: 1)
     downEvent?.post(tap: .cghidEventTap)
     upEvent?.post(tap: .cghidEventTap)
-    lastOutput = button == .left ? "LEFT CLICK SENT" : "RIGHT CLICK SENT"
+    lastOutput = "\(mouseLabel(button, suffix: "CLICK")) SENT"
   }
   private func mouseDown(_ button: CGMouseButton, at point: CGPoint?) {
     guard heldButtons[button] == nil,
-      ensureAccessibility(for: button == .left ? "LEFT HOLD" : "RIGHT HOLD")
+      ensureAccessibility(for: mouseLabel(button, suffix: "HOLD"))
     else { return }
     let screen = point ?? pointerPosition ?? CGEvent(source: nil)?.location ?? .zero
-    let type: CGEventType = button == .left ? .leftMouseDown : .rightMouseDown
+    let type: CGEventType =
+      button == .left ? .leftMouseDown : (button == .right ? .rightMouseDown : .otherMouseDown)
     let source = CGEventSource(stateID: .hidSystemState)
     source?.localEventsSuppressionInterval = 0
     let event = CGEvent(
@@ -201,19 +209,23 @@ import Foundation
     event?.setIntegerValueField(.mouseEventClickState, value: 1)
     event?.post(tap: .cghidEventTap)
     heldButtons[button] = screen
-    lastOutput = button == .left ? "LEFT CLICK HELD · RELEASE PINCH TO DROP" : "RIGHT CLICK HELD"
+    lastOutput = "\(mouseLabel(button, suffix: "CLICK")) HELD · RELEASE PINCH TO DROP"
   }
   private func mouseUp(_ button: CGMouseButton) {
     guard heldButtons.removeValue(forKey: button) != nil else { return }
     let screen = pointerPosition ?? CGEvent(source: nil)?.location ?? .zero
-    let type: CGEventType = button == .left ? .leftMouseUp : .rightMouseUp
+    let type: CGEventType =
+      button == .left ? .leftMouseUp : (button == .right ? .rightMouseUp : .otherMouseUp)
     let source = CGEventSource(stateID: .hidSystemState)
     source?.localEventsSuppressionInterval = 0
     let event = CGEvent(
       mouseEventSource: source, mouseType: type, mouseCursorPosition: screen, mouseButton: button)
     event?.setIntegerValueField(.mouseEventClickState, value: 1)
     event?.post(tap: .cghidEventTap)
-    lastOutput = button == .left ? "LEFT CLICK RELEASED" : "RIGHT CLICK RELEASED"
+    lastOutput = "\(mouseLabel(button, suffix: "CLICK")) RELEASED"
+  }
+  private func mouseLabel(_ button: CGMouseButton, suffix: String) -> String {
+    "\(button == .left ? "LEFT" : (button == .right ? "RIGHT" : "MIDDLE")) \(suffix)"
   }
   func releaseAllMouseButtons() {
     for button in Array(heldButtons.keys) { mouseUp(button) }
