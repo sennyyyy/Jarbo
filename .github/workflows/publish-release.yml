@@ -20,5 +20,5 @@ jobs:
           test -f "release-notes/$GITHUB_REF_NAME.md"
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
-            --title "Jarbo ${GITHUB_REF_NAME#v}" \
+            --title "ALPHA Jarbo ${GITHUB_REF_NAME#v}" \
             --notes-file "release-notes/$GITHUB_REF_NAME.md"

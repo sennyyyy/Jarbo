@@ -15,7 +15,7 @@ import SwiftUI
   var statusItem: NSStatusItem!
   func applicationDidFinishLaunching(_ notification: Notification) {
     automation.state = state
-    automation.sensitivityProvider = { [weak state] in state?.pointerSensitivity ?? 0.32 }
+    automation.sensitivityProvider = { [weak state] in state?.pointerSensitivity ?? 0.5 }
     tracker.automation = automation
     tracker.roleProvider = { [weak state] in
       (state?.leftRole ?? .pointer, state?.rightRole ?? .controls)

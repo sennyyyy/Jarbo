@@ -110,7 +110,7 @@ import Foundation
       x: filteredDelta.x * 0.68 + dx * 0.32,
       y: filteredDelta.y * 0.68 + dy * 0.32)
     let speed = hypot(filteredDelta.x, filteredDelta.y)
-    let sensitivity = CGFloat(min(max(sensitivityProvider?() ?? 0.32, 0.15), 1.2))
+    let sensitivity = CGFloat(min(max(sensitivityProvider?() ?? 0.5, 0.15), 1.2))
     let gain = min(2.25, (0.72 + speed * 26) * sensitivity)
     let previous = pointerPosition ?? currentCursor
     let next = CGPoint(
@@ -232,6 +232,29 @@ import Foundation
   }
   private func shortcut(_ code: CGKeyCode, modifier: CGKeyCode, label: String) {
     guard ensureAccessibility(for: label) else { return }
+    lastOutput = "\(label) REQUESTED · SYSTEM EVENTS"
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    process.arguments = [
+      "-e", "tell application \"System Events\" to key code \(code) using {control down}",
+    ]
+    process.terminationHandler = { [weak self] completed in
+      Task { @MainActor in
+        guard let self else { return }
+        if completed.terminationStatus == 0 {
+          self.lastOutput = "\(label) CONFIRMED · SYSTEM EVENTS"
+        } else {
+          self.postShortcut(code, modifier: modifier, label: label)
+        }
+      }
+    }
+    do {
+      try process.run()
+    } catch {
+      postShortcut(code, modifier: modifier, label: label)
+    }
+  }
+  private func postShortcut(_ code: CGKeyCode, modifier: CGKeyCode, label: String) {
     let source = CGEventSource(stateID: .hidSystemState)
     source?.localEventsSuppressionInterval = 0
     let modifierDown = CGEvent(keyboardEventSource: source, virtualKey: modifier, keyDown: true)
@@ -246,7 +269,7 @@ import Foundation
     keyDown?.post(tap: .cghidEventTap)
     keyUp?.post(tap: .cghidEventTap)
     modifierUp?.post(tap: .cghidEventTap)
-    lastOutput = "\(label) SENT · CONTROL + ARROW"
+    lastOutput = "\(label) SENT · HID FALLBACK"
   }
   private func mediaKey(_ key: Int) {
     let script: String
@@ -256,9 +279,9 @@ import Foundation
     case 1:
       script = "set v to output volume of (get volume settings)\nset volume output volume (v - 6)"
     case 7: script = "set volume with output muted not (output muted of (get volume settings))"
-    case 16: script = "tell application \"Music\" to playpause"
-    case 17: script = "tell application \"Music\" to next track"
-    case 18: script = "tell application \"Music\" to previous track"
+    case 16: script = "tell application \"Spotify\" to playpause"
+    case 17: script = "tell application \"Spotify\" to next track"
+    case 18: script = "tell application \"Spotify\" to previous track"
     default: return
     }
     let p = Process()

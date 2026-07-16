@@ -369,6 +369,7 @@ struct BindingsEditor: View {
   @EnvironmentObject var tracker: HandTrackingService
   @EnvironmentObject var automation: AutomationService
   @State private var captureHand = HandSide.right
+  @State private var trainingGesture = GestureKind.fist
   @State private var draft = ActionBinding(
     name: "New command", hand: .right, gesture: .openPalm, action: .missionControl)
   var body: some View {
@@ -390,25 +391,26 @@ struct BindingsEditor: View {
           .font(.caption).foregroundStyle(.secondary)
       }
       HStack(spacing: 10) {
-        Text("CUSTOM POSES").font(.caption.bold()).tracking(1.2)
+        Text("PERSONAL TRAINING").font(.caption.bold()).tracking(1.2)
         Picker("Capture hand", selection: $captureHand) {
           Text("Left hand").tag(HandSide.left)
           Text("Right hand").tag(HandSide.right)
         }.frame(width: 160)
-        ForEach([GestureKind.customA, .customB, .customC]) { gesture in
-          Button(
-            state.handPoseTemplates.contains(where: { $0.gesture == gesture })
-              ? "RECAPTURE \(gesture.rawValue.uppercased())"
-              : "CAPTURE \(gesture.rawValue.uppercased())"
-          ) {
-            if let features = tracker.captureTemplate(for: gesture, hand: captureHand) {
-              state.setTemplate(features, for: gesture)
-            } else {
-              state.log("CAPTURE FAILED — SHOW THE SELECTED HAND TO THE CAMERA")
-            }
-          }.buttonStyle(.bordered)
-        }
-        Text("Hold your pose in the green box, then capture it.")
+        Picker("Gesture", selection: $trainingGesture) {
+          ForEach(GestureKind.allCases.filter { ![.swipeLeft, .swipeRight].contains($0) }) {
+            Text($0.rawValue).tag($0)
+          }
+        }.frame(width: 155)
+        Button("ADD SAMPLE · \(state.sampleCount(for: trainingGesture))/8") {
+          if let features = tracker.captureTemplate(for: trainingGesture, hand: captureHand) {
+            state.addTrainingSample(features, for: trainingGesture)
+          } else {
+            state.log("TRAINING FAILED — SHOW THE SELECTED HAND TO THE CAMERA")
+          }
+        }.buttonStyle(.borderedProminent)
+        Button("CLEAR") { state.removeTemplate(for: trainingGesture) }
+          .disabled(state.sampleCount(for: trainingGesture) == 0)
+        Text("Add 3–5 natural variations of your fist, pinch, or custom pose.")
           .font(.caption).foregroundStyle(.secondary)
       }
       List {

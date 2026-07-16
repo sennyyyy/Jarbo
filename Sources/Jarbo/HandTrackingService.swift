@@ -168,23 +168,6 @@ final class HandTrackingService: NSObject, ObservableObject,
       return hypot(x.x - y.x, x.y - y.y)
     }
     let palm = max(d(.indexMCP, .littleMCP), d(.wrist, .middleMCP) * 0.72, 0.04)
-    let previous = pinchState[side] ?? (false, false)
-    let indexRatio = d(.thumbTip, .indexTip) / palm
-    let middleRatio = d(.thumbTip, .middleTip) / palm
-    var frames = pinchFrames[side] ?? (0, 0)
-    let indexNear = indexRatio < (previous.0 ? 0.84 : 0.62)
-    let middleNear = middleRatio < (previous.1 ? 0.84 : 0.62)
-    frames.0 = indexNear ? min(frames.0 + 1, 3) : 0
-    frames.1 = middleNear ? min(frames.1 + 1, 3) : 0
-    var indexPinch = previous.0 ? indexNear : frames.0 >= 2
-    var middlePinch = previous.1 ? middleNear : frames.1 >= 2
-    if indexPinch, middlePinch {
-      if indexRatio <= middleRatio { middlePinch = false } else { indexPinch = false }
-    }
-    pinchFrames[side] = frames
-    pinchState[side] = (indexPinch, middlePinch)
-    if indexPinch { return .pinch }
-    if middlePinch { return .middlePinch }
     let tips: [VNHumanHandPoseObservation.JointName] = [
       .indexTip, .middleTip, .ringTip, .littleTip,
     ]
@@ -198,7 +181,37 @@ final class HandTrackingService: NSObject, ObservableObject,
     {
       return swipe
     }
-    if let custom = closestTemplate(to: p) { return custom }
+    // Personal training samples take priority over geometric fallbacks. This lets a user teach
+    // Jarbo the difference between their own fist and pinch instead of relying on one generic pose.
+    if let trained = closestTemplate(to: p) {
+      pinchState[side] = (trained == .pinch, trained == .middlePinch)
+      return trained
+    }
+    let previous = pinchState[side] ?? (false, false)
+    let indexRatio = d(.thumbTip, .indexTip) / palm
+    let middleRatio = d(.thumbTip, .middleTip) / palm
+    var frames = pinchFrames[side] ?? (0, 0)
+    let indexReach = d(.indexTip, .wrist) / max(d(.indexMCP, .wrist), 0.02)
+    let middleReach = d(.middleTip, .wrist) / max(d(.middleMCP, .wrist), 0.02)
+    let otherOpen = extended.dropFirst().filter { $0 }.count
+    // A closed fist also places the thumb near the fingertips. Requiring finger reach or another
+    // open finger prevents that common pose from being treated as a pinch.
+    let indexPoseValid = indexReach > 1.30 && (otherOpen >= 1 || extended[0])
+    let middlePoseValid =
+      middleReach > 1.27 && (extended[0] || extended.dropFirst(2).contains(true))
+    let indexNear = indexRatio < (previous.0 ? 0.78 : 0.54) && indexPoseValid
+    let middleNear = middleRatio < (previous.1 ? 0.78 : 0.54) && middlePoseValid
+    frames.0 = indexNear ? min(frames.0 + 1, 3) : 0
+    frames.1 = middleNear ? min(frames.1 + 1, 3) : 0
+    var indexPinch = previous.0 ? indexNear : frames.0 >= 2
+    var middlePinch = previous.1 ? middleNear : frames.1 >= 2
+    if indexPinch, middlePinch {
+      if indexRatio <= middleRatio { middlePinch = false } else { indexPinch = false }
+    }
+    pinchFrames[side] = frames
+    pinchState[side] = (indexPinch, middlePinch)
+    if indexPinch { return .pinch }
+    if middlePinch { return .middlePinch }
     if let tip = p[.thumbTip], let mp = p[.thumbMP], p[.wrist] != nil,
       tip.y < mp.y - palm * 0.13, d(.thumbTip, .wrist) > d(.thumbMP, .wrist) * 1.14,
       extendedCount <= 1
@@ -290,16 +303,22 @@ final class HandTrackingService: NSObject, ObservableObject,
     to points: [VNHumanHandPoseObservation.JointName: CGPoint]
   ) -> GestureKind? {
     guard let features = Self.poseFeatures(points) else { return nil }
-    var best: (GestureKind, Double)?
+    var distances: [GestureKind: [Double]] = [:]
     for template in templatesProvider?() ?? [] where template.features.count == features.count {
       let error = zip(features, template.features).reduce(0.0) { partial, pair in
         let delta = pair.0 - pair.1
         return partial + delta * delta
       }
       let rms = sqrt(error / Double(features.count))
-      if best == nil || rms < best!.1 { best = (template.gesture, rms) }
+      distances[template.gesture, default: []].append(rms)
     }
-    return best?.1 ?? .infinity < 0.16 ? best?.0 : nil
+    let ranked = distances.map { gesture, values -> (GestureKind, Double) in
+      let nearest = values.sorted().prefix(3)
+      return (gesture, nearest.reduce(0, +) / Double(nearest.count))
+    }.sorted { $0.1 < $1.1 }
+    guard let best = ranked.first, best.1 < 0.145 else { return nil }
+    if ranked.count > 1, ranked[1].1 - best.1 < 0.018 { return nil }
+    return best.0
   }
   private static func poseFeatures(
     _ points: [VNHumanHandPoseObservation.JointName: CGPoint]

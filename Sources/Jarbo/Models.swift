@@ -98,7 +98,7 @@ struct ActionBinding: Identifiable, Codable, Hashable {
   var enabled = true
 }
 struct HandPoseTemplate: Identifiable, Codable, Hashable {
-  var id: GestureKind { gesture }
+  var id: Int { features.hashValue ^ gesture.rawValue.hashValue }
   var gesture: GestureKind
   var features: [Double]
 }
@@ -124,7 +124,7 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
   @Published var leftRole: HandRole = .pointer { didSet { save() } }
   @Published var rightRole: HandRole = .controls { didSet { save() } }
   @Published var bindings: [ActionBinding] = AppState.defaults { didSet { save() } }
-  @Published var pointerSensitivity = 0.32 { didSet { save() } }
+  @Published var pointerSensitivity = 0.5 { didSet { save() } }
   @Published var handPoseTemplates: [HandPoseTemplate] = [] { didSet { save() } }
   @Published var notes = "Welcome back. Jarbo systems are online." { didSet { save() } }
   @Published var showHUD = true
@@ -151,13 +151,21 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     bindings = AppState.defaults
     log("ESSENTIAL HAND CONTROLS RESTORED")
   }
-  func setTemplate(_ features: [Double], for gesture: GestureKind) {
-    handPoseTemplates.removeAll { $0.gesture == gesture }
+  func addTrainingSample(_ features: [Double], for gesture: GestureKind) {
     handPoseTemplates.append(.init(gesture: gesture, features: features))
-    log("CAPTURED \(gesture.rawValue.uppercased())")
+    let samples = handPoseTemplates.filter { $0.gesture == gesture }
+    if samples.count > 8 {
+      let removeCount = samples.count - 8
+      let removeIDs = Set(samples.prefix(removeCount).map(\.id))
+      handPoseTemplates.removeAll { removeIDs.contains($0.id) }
+    }
+    log("TRAINED \(gesture.rawValue.uppercased()) · \(sampleCount(for: gesture))/8 SAMPLES")
   }
   func removeTemplate(for gesture: GestureKind) {
     handPoseTemplates.removeAll { $0.gesture == gesture }
+  }
+  func sampleCount(for gesture: GestureKind) -> Int {
+    handPoseTemplates.filter { $0.gesture == gesture }.count
   }
   func log(_ text: String) {
     commandLog.insert("\(Date.now.formatted(date: .omitted, time: .standard))  \(text)", at: 0)
@@ -185,13 +193,12 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     leftRole = s.leftRole
     rightRole = s.rightRole
     bindings = migrate(s.bindings, from: s.schemaVersion ?? 0)
-    let savedSensitivity = s.pointerSensitivity ?? 0.32
-    pointerSensitivity = (s.schemaVersion ?? 0) < 3 ? min(savedSensitivity, 0.32) : savedSensitivity
+    pointerSensitivity = (s.schemaVersion ?? 0) < 4 ? 0.5 : (s.pointerSensitivity ?? 0.5)
     handPoseTemplates = s.handPoseTemplates ?? []
     notes = s.notes
   }
   private func migrate(_ saved: [ActionBinding], from schema: Int) -> [ActionBinding] {
-    guard schema < 3 else { return saved }
+    guard schema < 4 else { return saved }
     var result = saved.filter { $0.action != .spaceLeft && $0.action != .spaceRight }
     // Open palm must stay unbound by default because it is the pose used to start a swipe.
     result.removeAll { $0.gesture == .openPalm && $0.action == .missionControl }
@@ -202,7 +209,7 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
   }
   private func save() {
     let s = Saved(
-      schemaVersion: 3, theme: theme, leftRole: leftRole, rightRole: rightRole,
+      schemaVersion: 4, theme: theme, leftRole: leftRole, rightRole: rightRole,
       bindings: bindings, pointerSensitivity: pointerSensitivity,
       handPoseTemplates: handPoseTemplates, notes: notes)
     try? FileManager.default.createDirectory(
