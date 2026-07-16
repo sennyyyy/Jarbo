@@ -110,6 +110,7 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
   @Published var leftRole: HandRole = .pointer { didSet { save() } }
   @Published var rightRole: HandRole = .controls { didSet { save() } }
   @Published var bindings: [ActionBinding] = AppState.defaults { didSet { save() } }
+  @Published var pointerSensitivity = 1.0 { didSet { save() } }
   @Published var notes = "Welcome back. Jarbo systems are online." { didSet { save() } }
   @Published var showHUD = true
   @Published var launchComplete = false
@@ -125,15 +126,23 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     .init(name: "Volume up", hand: .right, gesture: .thumbsUp, action: .volumeUp),
   ]
   init() { load() }
+  func restoreEssentialControls() {
+    leftRole = .pointer
+    rightRole = .controls
+    bindings = AppState.defaults
+    log("ESSENTIAL HAND CONTROLS RESTORED")
+  }
   func log(_ text: String) {
     commandLog.insert("\(Date.now.formatted(date: .omitted, time: .standard))  \(text)", at: 0)
     commandLog = Array(commandLog.prefix(40))
   }
   private struct Saved: Codable {
+    var schemaVersion: Int?
     var theme: JarboTheme
     var leftRole: HandRole
     var rightRole: HandRole
     var bindings: [ActionBinding]
+    var pointerSensitivity: Double?
     var notes: String
   }
   private var saveURL: URL {
@@ -147,12 +156,26 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     theme = s.theme
     leftRole = s.leftRole
     rightRole = s.rightRole
-    bindings = s.bindings
+    bindings = migrate(s.bindings, from: s.schemaVersion ?? 0)
+    pointerSensitivity = s.pointerSensitivity ?? 1
     notes = s.notes
+  }
+  private func migrate(_ saved: [ActionBinding], from schema: Int) -> [ActionBinding] {
+    guard schema < 2 else { return saved }
+    var result = saved.filter { $0.action != .spaceLeft && $0.action != .spaceRight }
+    for essential in AppState.defaults
+    where
+      essential.action == .leftClick || essential.action == .rightClick
+      || essential.action == .spaceLeft || essential.action == .spaceRight
+    {
+      if !result.contains(where: { $0.action == essential.action }) { result.append(essential) }
+    }
+    return result
   }
   private func save() {
     let s = Saved(
-      theme: theme, leftRole: leftRole, rightRole: rightRole, bindings: bindings, notes: notes)
+      schemaVersion: 2, theme: theme, leftRole: leftRole, rightRole: rightRole,
+      bindings: bindings, pointerSensitivity: pointerSensitivity, notes: notes)
     try? FileManager.default.createDirectory(
       at: saveURL.deletingLastPathComponent(), withIntermediateDirectories: true)
     if let data = try? JSONEncoder().encode(s) { try? data.write(to: saveURL, options: .atomic) }

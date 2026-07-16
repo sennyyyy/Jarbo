@@ -24,6 +24,7 @@ struct ControlCenterView: View {
     }
     .preferredColorScheme(.dark)
     .onAppear {
+      automation.refreshAccessibility()
       tracker.start()
       withAnimation(.easeOut(duration: 0.8).delay(1.7)) { state.launchComplete = true }
     }
@@ -39,6 +40,7 @@ struct ControlCenterView: View {
   private var hud: some View {
     VStack(spacing: 0) {
       topBar
+      if !automation.accessibilityGranted { accessBanner }
       GeometryReader { geo in
         ZStack {
           ArcReactorView(color: accent)
@@ -77,6 +79,14 @@ struct ControlCenterView: View {
         )
       }
       Button("ACTIONS") { showBindings = true }
+      Button {
+        automation.requestAccessibility()
+      } label: {
+        Label(
+          automation.accessibilityGranted ? "CONTROL READY" : "ENABLE CONTROL",
+          systemImage: automation.accessibilityGranted
+            ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+      }.tint(automation.accessibilityGranted ? .green : .red)
       Button("GENERATE") { showImageGen = true }
       Button("WIDGETS") { showExtras = true }
       Circle().fill(tracker.running ? .green : .red).frame(width: 8, height: 8)
@@ -87,10 +97,21 @@ struct ControlCenterView: View {
     .overlay(alignment: .bottom) { Rectangle().fill(accent.opacity(0.5)).frame(height: 1) }
   }
 
+  private var accessBanner: some View {
+    HStack(spacing: 12) {
+      Image(systemName: "cursorarrow.rays").foregroundStyle(.red)
+      Text("MAC CONTROL IS BLOCKED UNTIL ACCESSIBILITY IS ENABLED")
+        .font(.system(size: 10, weight: .black, design: .monospaced)).tracking(1.2)
+      Spacer()
+      Button("OPEN ACCESSIBILITY SETTINGS") { automation.requestAccessibility() }
+        .buttonStyle(.borderedProminent).tint(.red)
+    }.padding(.horizontal, 18).frame(height: 42).background(.red.opacity(0.13))
+  }
+
   private var cameraCard: some View {
     HUDCard(title: "Neural hand-control feed", color: .green) {
       ZStack {
-        CameraPreview(session: tracker.session).frame(width: 390, height: 228).clipShape(
+        CameraPreview(session: tracker.session).frame(width: 390, height: 219).clipShape(
           RoundedRectangle(cornerRadius: 7))
         LinearGradient(
           colors: [.clear, .black.opacity(0.42)], startPoint: .center, endPoint: .bottom
@@ -119,6 +140,9 @@ struct ControlCenterView: View {
           .foregroundStyle(tracker.running ? .green : .red)
       }
       .font(.system(size: 8, weight: .bold, design: .monospaced))
+      Text(automation.lastOutput).font(.system(size: 9, weight: .black, design: .monospaced))
+        .foregroundStyle(automation.accessibilityGranted ? .green : .red)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }.frame(width: 390)
   }
   private var systemCard: some View {
@@ -355,6 +379,13 @@ struct BindingsEditor: View {
           ForEach(HandRole.allCases) { Text($0.rawValue).tag($0) }
         }
       }
+      HStack(spacing: 12) {
+        Label("Pointer sensitivity", systemImage: "cursorarrow.motionlines")
+        Slider(value: $state.pointerSensitivity, in: 0.55...1.8, step: 0.05)
+        Text("\(state.pointerSensitivity, specifier: "%.2f")×").monospacedDigit().frame(width: 54)
+        Text("Relative mode: lift or close the hand to clutch and reposition.")
+          .font(.caption).foregroundStyle(.secondary)
+      }
       List {
         ForEach($state.bindings) { $binding in
           HStack {
@@ -397,6 +428,12 @@ struct BindingsEditor: View {
           draft = .init(
             name: "New command", hand: .right, gesture: .openPalm, action: .missionControl)
         }
+      }
+      HStack {
+        Button("RESTORE ESSENTIAL PRESETS") { state.restoreEssentialControls() }
+          .buttonStyle(.borderedProminent)
+        Text("Restores left-hand pointer/click and right-hand desktop swipe controls.")
+          .font(.caption).foregroundStyle(.secondary)
       }
       Text(
         "Shell commands and Accessibility actions run only when you explicitly bind and trigger them."

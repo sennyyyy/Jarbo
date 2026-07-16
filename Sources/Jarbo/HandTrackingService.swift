@@ -22,7 +22,10 @@ final class HandTrackingService: NSObject, ObservableObject,
   private var smooth: [HandSide: [VNHumanHandPoseObservation.JointName: CGPoint]] = [:]
   private var history: [HandSide: [(Date, CGPoint)]] = [:]
   private var pinchState: [HandSide: (Bool, Bool)] = [:]
-  private var lastGesture: [HandSide: (GestureKind, Date)] = [:]
+  private var pinchFrames: [HandSide: (Int, Int)] = [:]
+  private var lastSwipe: [HandSide: Date] = [:]
+  private var gestureCandidate: [HandSide: (GestureKind, Int)] = [:]
+  private var activeGesture: [HandSide: GestureKind] = [:]
   func start() {
     guard !running else { return }
     switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -78,7 +81,6 @@ final class HandTrackingService: NSObject, ObservableObject,
     guard let pixel = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
     let request = VNDetectHumanHandPoseRequest()
     request.maximumHandCount = 2
-    request.revision = VNDetectHumanHandPoseRequestRevision1
     let handler = VNImageRequestHandler(cvPixelBuffer: pixel, orientation: .up, options: [:])
     guard (try? handler.perform([request])) != nil else { return }
     process(request.results ?? [])
@@ -108,7 +110,7 @@ final class HandTrackingService: NSObject, ObservableObject,
         // landscape pixel buffer, so mirror only X when converting into preview coordinates.
         let raw = CGPoint(x: 1 - p.location.x, y: 1 - p.location.y)
         let old = smooth[side]?[joint] ?? raw
-        let alpha: CGFloat = p.confidence > 0.75 ? 0.42 : 0.24
+        let alpha: CGFloat = p.confidence > 0.78 ? 0.34 : 0.20
         points[joint] = CGPoint(
           x: old.x + (raw.x - old.x) * alpha, y: old.y + (raw.y - old.y) * alpha)
         confidence = min(confidence, p.confidence)
@@ -148,12 +150,21 @@ final class HandTrackingService: NSObject, ObservableObject,
       guard let x = p[a], let y = p[b] else { return 9 }
       return hypot(x.x - y.x, x.y - y.y)
     }
-    let palm = max(d(.wrist, .middleMCP), 0.04)
+    let palm = max(d(.indexMCP, .littleMCP), d(.wrist, .middleMCP) * 0.72, 0.04)
     let previous = pinchState[side] ?? (false, false)
     let indexRatio = d(.thumbTip, .indexTip) / palm
     let middleRatio = d(.thumbTip, .middleTip) / palm
-    let indexPinch = previous.0 ? indexRatio < 0.66 : indexRatio < 0.46
-    let middlePinch = previous.1 ? middleRatio < 0.66 : middleRatio < 0.46
+    var frames = pinchFrames[side] ?? (0, 0)
+    let indexNear = indexRatio < (previous.0 ? 0.84 : 0.62)
+    let middleNear = middleRatio < (previous.1 ? 0.84 : 0.62)
+    frames.0 = indexNear ? min(frames.0 + 1, 3) : 0
+    frames.1 = middleNear ? min(frames.1 + 1, 3) : 0
+    var indexPinch = previous.0 ? indexNear : frames.0 >= 2
+    var middlePinch = previous.1 ? middleNear : frames.1 >= 2
+    if indexPinch, middlePinch {
+      if indexRatio <= middleRatio { middlePinch = false } else { indexPinch = false }
+    }
+    pinchFrames[side] = frames
     pinchState[side] = (indexPinch, middlePinch)
     if indexPinch { return .pinch }
     if middlePinch { return .middlePinch }
@@ -163,24 +174,40 @@ final class HandTrackingService: NSObject, ObservableObject,
     let pips: [VNHumanHandPoseObservation.JointName] = [
       .indexPIP, .middlePIP, .ringPIP, .littlePIP,
     ]
-    let extended = zip(tips, pips).map { (p[$0.0]?.y ?? 1) < (p[$0.1]?.y ?? 0) }
-    if extended == [false, false, false, false] { return .fist }
-    if extended == [true, true, true, true] {
-      return detectSwipe(p[.wrist] ?? .zero, side: side) ?? .openPalm
+    let extended = zip(tips, pips).map { d($0.0, .wrist) > d($0.1, .wrist) * 1.10 }
+    let extendedCount = extended.filter { $0 }.count
+    if extendedCount >= 3,
+      let swipe = detectSwipe(p[.wrist] ?? p[.middleMCP] ?? .zero, side: side)
+    {
+      return swipe
     }
+    if let tip = p[.thumbTip], let mp = p[.thumbMP], p[.wrist] != nil,
+      tip.y < mp.y - palm * 0.13, d(.thumbTip, .wrist) > d(.thumbMP, .wrist) * 1.14,
+      extendedCount <= 1
+    {
+      return .thumbsUp
+    }
+    if extended == [false, false, false, false] { return .fist }
+    if extended == [true, true, true, true] { return .openPalm }
     if extended == [true, false, false, false] { return .point }
     if extended == [true, true, false, false] { return .peace }
-    if let t = p[.thumbTip], let w = p[.wrist], t.y < w.y - palm * 0.6 { return .thumbsUp }
     return .point
   }
   private func detectSwipe(_ wrist: CGPoint, side: HandSide) -> GestureKind? {
     var h = history[side] ?? []
     let now = Date()
     h.append((now, wrist))
-    h.removeAll { $0.0 < now.addingTimeInterval(-0.45) }
+    h.removeAll { $0.0 < now.addingTimeInterval(-0.34) }
     history[side] = h
-    guard let first = h.first, abs(wrist.x - first.1.x) > 0.22 else { return nil }
-    return wrist.x > first.1.x ? .swipeRight : .swipeLeft
+    guard now.timeIntervalSince(lastSwipe[side] ?? .distantPast) > 0.72,
+      let first = h.first
+    else { return nil }
+    let dx = wrist.x - first.1.x
+    let dy = wrist.y - first.1.y
+    guard abs(dx) > 0.065, abs(dy) < 0.11 else { return nil }
+    lastSwipe[side] = now
+    history[side] = []
+    return dx > 0 ? .swipeRight : .swipeLeft
   }
   private func dispatch(
     side: HandSide, gesture: GestureKind, points: [VNHumanHandPoseObservation.JointName: CGPoint]
@@ -195,11 +222,14 @@ final class HandTrackingService: NSObject, ObservableObject,
         self.automation?.movePointer(to: point)
       }
       guard role != .disabled else { return }
-      let previous = self.lastGesture[side]
-      if previous?.0 == gesture, Date().timeIntervalSince(previous?.1 ?? .distantPast) < 0.45 {
-        return
-      }
-      self.lastGesture[side] = (gesture, Date())
+      let previous = self.gestureCandidate[side]
+      let frames = previous?.0 == gesture ? (previous?.1 ?? 0) + 1 : 1
+      self.gestureCandidate[side] = (gesture, frames)
+      let immediate =
+        gesture == .pinch || gesture == .middlePinch || gesture == .swipeLeft
+        || gesture == .swipeRight
+      guard frames >= (immediate ? 1 : 2), self.activeGesture[side] != gesture else { return }
+      self.activeGesture[side] = gesture
       for b in self.bindingsProvider?().filter({
         $0.hand == side && $0.gesture == gesture && $0.enabled
       }) ?? [] { self.automation?.execute(b) }

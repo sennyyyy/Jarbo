@@ -1,13 +1,28 @@
 import AppKit
+import ApplicationServices
 import CoreGraphics
 import Foundation
 
 @MainActor final class AutomationService: ObservableObject {
+  @Published private(set) var accessibilityGranted = false
+  @Published private(set) var lastOutput = "WAITING FOR GESTURE"
   weak var state: AppState?
+  var sensitivityProvider: (() -> Double)?
   private var lastRun: [UUID: Date] = [:]
   private let pointerOverlay = PointerOverlayController()
-  private var smoothedPointer: CGPoint?
+  private var pointerPosition: CGPoint?
+  private var lastHandPoint: CGPoint?
+  private var filteredDelta = CGPoint.zero
   private var pointerTimeout: DispatchWorkItem?
+  private var permissionTimer: Timer?
+  private var lastAccessWarning = Date.distantPast
+  init() {
+    refreshAccessibility()
+    permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) {
+      [weak self] _ in
+      Task { @MainActor in self?.refreshAccessibility() }
+    }
+  }
   func execute(_ binding: ActionBinding, at point: CGPoint? = nil) {
     guard binding.enabled, Date().timeIntervalSince(lastRun[binding.id] ?? .distantPast) > 0.65
     else { return }
@@ -52,53 +67,117 @@ import Foundation
   }
   func movePointer(to normalized: CGPoint) {
     let frame = NSScreen.main?.frame ?? .zero
-    guard frame.width > 0, frame.height > 0 else { return }
-    // Use an inner camera region as the full screen. This reduces edge strain and clamps
-    // occasional Vision landmarks that briefly jump outside the camera image.
-    let x = min(max((normalized.x - 0.08) / 0.84, 0), 1)
-    let y = min(max((normalized.y - 0.10) / 0.80, 0), 1)
-    let target = CGPoint(x: frame.minX + x * frame.width, y: y * frame.height)
-    let previous = smoothedPointer ?? target
-    let distance = hypot(target.x - previous.x, target.y - previous.y)
-    let alpha: CGFloat = distance > 220 ? 0.72 : (distance > 70 ? 0.46 : 0.24)
-    var next = CGPoint(
-      x: previous.x + (target.x - previous.x) * alpha,
-      y: previous.y + (target.y - previous.y) * alpha)
-    if distance < 2.2 { next = previous }
-    smoothedPointer = next
+    guard frame.width > 0, frame.height > 0, ensureAccessibility(for: "POINTER") else { return }
+    let currentCursor =
+      CGEvent(source: nil)?.location
+      ?? CGPoint(
+        x: frame.midX, y: frame.height / 2)
+    guard let previousHand = lastHandPoint else {
+      lastHandPoint = normalized
+      pointerPosition = currentCursor
+      pointerOverlay.show(at: currentCursor, screenHeight: frame.height)
+      armPointerTimeout()
+      return
+    }
+    let raw = CGPoint(x: normalized.x - previousHand.x, y: normalized.y - previousHand.y)
+    lastHandPoint = normalized
+    // Ignore a discontinuity caused by a lost/reacquired landmark or a handedness flip.
+    guard abs(raw.x) < 0.14, abs(raw.y) < 0.14 else {
+      filteredDelta = .zero
+      return
+    }
+    let deadzone: CGFloat = 0.0018
+    let dx = abs(raw.x) < deadzone ? 0 : raw.x
+    let dy = abs(raw.y) < deadzone ? 0 : raw.y
+    filteredDelta = CGPoint(
+      x: filteredDelta.x * 0.48 + dx * 0.52,
+      y: filteredDelta.y * 0.48 + dy * 0.52)
+    let speed = hypot(filteredDelta.x, filteredDelta.y)
+    let sensitivity = CGFloat(min(max(sensitivityProvider?() ?? 1, 0.55), 1.8))
+    let gain = min(4.8, (1.65 + speed * 58) * sensitivity)
+    let previous = pointerPosition ?? currentCursor
+    let next = CGPoint(
+      x: min(max(frame.minX, previous.x + filteredDelta.x * frame.width * gain), frame.maxX - 1),
+      y: min(max(0, previous.y + filteredDelta.y * frame.height * gain), frame.height - 1))
+    pointerPosition = next
+    let source = CGEventSource(stateID: .hidSystemState)
+    source?.localEventsSuppressionInterval = 0
     CGEvent(
-      mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: next,
+      mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: next,
       mouseButton: .left)?.post(tap: .cghidEventTap)
     pointerOverlay.show(at: next, screenHeight: frame.height)
+    lastOutput = "POINTER ACTIVE · RELATIVE MODE"
+    armPointerTimeout()
+  }
+  private func armPointerTimeout() {
     pointerTimeout?.cancel()
     let timeout = DispatchWorkItem { [weak self] in self?.deactivatePointer() }
     pointerTimeout = timeout
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.34, execute: timeout)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.42, execute: timeout)
   }
   func deactivatePointer() {
     pointerTimeout?.cancel()
     pointerTimeout = nil
-    smoothedPointer = nil
+    pointerPosition = nil
+    lastHandPoint = nil
+    filteredDelta = .zero
     pointerOverlay.hide()
   }
+  func requestAccessibility() {
+    _ = CGRequestPostEventAccess()
+    let options =
+      [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+    _ = AXIsProcessTrustedWithOptions(options)
+    if let url = URL(
+      string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+    {
+      NSWorkspace.shared.open(url)
+    }
+    refreshAccessibility()
+  }
+  func refreshAccessibility() {
+    accessibilityGranted = AXIsProcessTrusted() && CGPreflightPostEventAccess()
+  }
+  private func ensureAccessibility(for action: String) -> Bool {
+    refreshAccessibility()
+    guard accessibilityGranted else {
+      lastOutput = "ACCESSIBILITY REQUIRED · \(action) BLOCKED"
+      if Date().timeIntervalSince(lastAccessWarning) > 4 {
+        state?.log("ACCESSIBILITY REQUIRED — control event blocked")
+        lastAccessWarning = Date()
+      }
+      return false
+    }
+    return true
+  }
   private func mouse(_ button: CGMouseButton, at point: CGPoint?) {
-    let p = point ?? NSEvent.mouseLocation
-    let screen = CGPoint(x: p.x, y: (NSScreen.main?.frame.height ?? 0) - p.y)
+    guard ensureAccessibility(for: button == .left ? "LEFT CLICK" : "RIGHT CLICK") else { return }
+    let screen = point ?? pointerPosition ?? CGEvent(source: nil)?.location ?? .zero
     let down: CGEventType = button == .left ? .leftMouseDown : .rightMouseDown
     let up: CGEventType = button == .left ? .leftMouseUp : .rightMouseUp
-    CGEvent(
-      mouseEventSource: nil, mouseType: down, mouseCursorPosition: screen, mouseButton: button)?
-      .post(tap: .cghidEventTap)
-    CGEvent(mouseEventSource: nil, mouseType: up, mouseCursorPosition: screen, mouseButton: button)?
-      .post(tap: .cghidEventTap)
+    let source = CGEventSource(stateID: .hidSystemState)
+    source?.localEventsSuppressionInterval = 0
+    let downEvent = CGEvent(
+      mouseEventSource: source, mouseType: down, mouseCursorPosition: screen, mouseButton: button)
+    let upEvent = CGEvent(
+      mouseEventSource: source, mouseType: up, mouseCursorPosition: screen, mouseButton: button)
+    downEvent?.setIntegerValueField(.mouseEventClickState, value: 1)
+    upEvent?.setIntegerValueField(.mouseEventClickState, value: 1)
+    downEvent?.post(tap: .cghidEventTap)
+    upEvent?.post(tap: .cghidEventTap)
+    lastOutput = button == .left ? "LEFT CLICK SENT" : "RIGHT CLICK SENT"
   }
   private func key(_ code: CGKeyCode, flags: CGEventFlags) {
-    let d = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)
+    guard ensureAccessibility(for: "KEYBOARD CONTROL") else { return }
+    let source = CGEventSource(stateID: .hidSystemState)
+    source?.localEventsSuppressionInterval = 0
+    let d = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)
     d?.flags = flags
     d?.post(tap: .cghidEventTap)
-    let u = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)
+    let u = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)
     u?.flags = flags
     u?.post(tap: .cghidEventTap)
+    lastOutput = "KEYBOARD CONTROL SENT"
   }
   private func mediaKey(_ key: Int) {
     let script: String

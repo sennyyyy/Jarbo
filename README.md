@@ -14,11 +14,11 @@ On first launch, allow Camera and Accessibility. Voice commands additionally req
 
 ## Controls
 
-- Left hand defaults to pointer mode. Point with the index finger; pinch thumb/index to click and thumb/middle to right-click.
-- Right hand defaults to gesture controls. Swipe to move between macOS Spaces, show an open palm for Mission Control, make a fist for play/pause, or give a thumbs-up for volume.
+- Left hand defaults to relative pointer mode. Point with the index finger and make small movements; pinch thumb/index to click and thumb/middle to right-click. Relax or remove the hand briefly to clutch and reposition.
+- Right hand defaults to gesture controls. Swipe an open hand horizontally to move between macOS Spaces, show an open palm for Mission Control, make a fist for play/pause, or give a thumbs-up for volume.
 - Open **Actions** to change either hand role and map any supported gesture to Mac controls, URLs, apps, files, notes, speech, searches, image generation, or shell commands.
 
-System automation requires macOS Accessibility permission. Shell commands run only when explicitly saved and triggered by the user.
+System automation requires macOS Accessibility permission. Jarbo displays a red warning whenever macOS is blocking cursor, click, or keyboard output. Shell commands run only when explicitly saved and triggered by the user.
 
 ## Publishing releases
 

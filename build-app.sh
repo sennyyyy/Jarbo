@@ -15,5 +15,6 @@ APP="$ROOT/dist/Jarbo.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/.build/release/Jarbo" "$APP/Contents/MacOS/Jarbo"
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
-codesign --force --deep --sign - "$APP"
+codesign --force --deep --sign - \
+  --requirements '=designated => identifier "com.senhong.jarbo"' "$APP"
 echo "$APP"
