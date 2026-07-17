@@ -10,13 +10,15 @@ import SwiftUI
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
   let state = AppState(), tracker = HandTrackingService(), automation = AutomationService(),
     monitor = SystemMonitor(), voice = VoiceService(), analyzer = ImageAnalyzer(),
-    imageGen = ImageGenerationService()
+    imageGen = ImageGenerationService(), gestureClassifier = PersonalizedGestureClassifier()
   var window: NSWindow!
   var statusItem: NSStatusItem!
   func applicationDidFinishLaunching(_ notification: Notification) {
     automation.state = state
     automation.sensitivityProvider = { [weak state] in state?.pointerSensitivity ?? 0.5 }
     tracker.automation = automation
+    tracker.personalizedClassifier = gestureClassifier
+    if gestureClassifier.isAvailable { tracker.personalizedModelStatus = "CORE ML READY" }
     tracker.roleProvider = { [weak state] in
       (state?.leftRole ?? .pointer, state?.rightRole ?? .controls)
     }

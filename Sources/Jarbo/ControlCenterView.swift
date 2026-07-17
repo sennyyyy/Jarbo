@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import Vision
 
 struct ControlCenterView: View {
   @EnvironmentObject var state: AppState
@@ -236,7 +235,7 @@ struct HandOverlay: View {
   let bindings: [ActionBinding]
   private let color = Color.green
   private let bones:
-    [(VNHumanHandPoseObservation.JointName, VNHumanHandPoseObservation.JointName)] = [
+    [(HandJoint, HandJoint)] = [
       (.wrist, .thumbCMC), (.thumbCMC, .thumbMP), (.thumbMP, .thumbIP), (.thumbIP, .thumbTip),
       (.wrist, .indexMCP), (.indexMCP, .indexPIP), (.indexPIP, .indexDIP), (.indexDIP, .indexTip),
       (.wrist, .middleMCP), (.middleMCP, .middlePIP), (.middlePIP, .middleDIP),
@@ -397,6 +396,9 @@ struct BindingsEditor: View {
           Text("Right hand").tag(HandSide.right)
         }.frame(width: 160)
         Picker("Gesture", selection: $trainingGesture) {
+          Section("Calibration") {
+            Text("No gesture / other").tag(GestureKind.unknown)
+          }
           ForEach(GestureCategory.allCases, id: \.self) { category in
             Section(category.rawValue) {
               ForEach(GestureKind.trainingCatalog.filter { $0.category == category }) {
@@ -424,15 +426,20 @@ struct BindingsEditor: View {
             let frames = tracker.captureRecentMotion(hand: captureHand)
           {
             state.addMotionTrainingSample(frames, for: trainingGesture)
-          } else if let features = tracker.captureTemplate(for: trainingGesture, hand: captureHand)
+          } else if let sample = tracker.captureTrainingSample(
+            for: trainingGesture, hand: captureHand)
           {
-            state.addTrainingSample(features, for: trainingGesture)
+            state.addTrainingSample(sample)
           } else {
             state.log("TRAINING FAILED — SHOW THE SELECTED HAND TO THE CAMERA")
           }
         }.buttonStyle(.borderedProminent)
         Button("CLEAR") { state.removeTemplate(for: trainingGesture) }
           .disabled(state.sampleCount(for: trainingGesture) == 0)
+        Button("BUILD CORE ML MODEL") {
+          tracker.trainPersonalizedModel(samples: state.handPoseTemplates)
+        }
+        .disabled(!state.coreMLTrainingReady)
         Text(
           trainingGesture.category == .motion
             ? "Perform the motion, then immediately add the recent 1.3-second trajectory."
@@ -440,6 +447,12 @@ struct BindingsEditor: View {
         )
         .font(.caption).foregroundStyle(.secondary)
       }
+      HStack(spacing: 8) {
+        Image(systemName: tracker.personalizedModelStatus.contains("READY") ? "brain.fill" : "brain")
+        Text(tracker.personalizedModelStatus)
+        Text("Train No gesture and at least two static gestures (10 samples each).")
+          .foregroundStyle(.secondary)
+      }.font(.system(size: 9, weight: .bold, design: .monospaced))
       List {
         ForEach($state.bindings) { $binding in
           HStack {

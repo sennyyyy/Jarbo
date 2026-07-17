@@ -37,7 +37,7 @@ NEXT_BUILD=$((CURRENT_BUILD + 1))
 ARCHIVE="dist/Jarbo-$VERSION.zip"
 ditto -c -k --norsrc --keepParent dist/Jarbo.app "$ARCHIVE"
 
-git add .github .gitignore Info.plist Package.swift README.md Sources build-app.sh patch-sdk-interfaces.sh release-notes release.sh
+git add .github .gitignore Info.plist Package.swift README.md Sources build-app.sh docs patch-sdk-interfaces.sh release-notes release.sh
 git commit -m "Release $TAG"
 git tag -a "$TAG" -F "$NOTES"
 git push origin HEAD

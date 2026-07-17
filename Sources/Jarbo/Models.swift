@@ -185,6 +185,20 @@ struct HandPoseTemplate: Identifiable, Codable, Hashable {
   var id: Int { features.hashValue ^ gesture.rawValue.hashValue }
   var gesture: GestureKind
   var features: [Double]
+  var backend: HandDetectorBackend?
+  var hand: HandSide?
+  var capturedAt: Date?
+
+  init(
+    gesture: GestureKind, features: [Double], backend: HandDetectorBackend? = nil,
+    hand: HandSide? = nil, capturedAt: Date? = nil
+  ) {
+    self.gesture = gesture
+    self.features = features
+    self.backend = backend
+    self.hand = hand
+    self.capturedAt = capturedAt
+  }
 }
 struct HandMotionTemplate: Identifiable, Codable, Hashable {
   var id: Int { frames.hashValue ^ gesture.rawValue.hashValue }
@@ -252,7 +266,11 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     log("ESSENTIAL HAND CONTROLS RESTORED")
   }
   func addTrainingSample(_ features: [Double], for gesture: GestureKind) {
-    handPoseTemplates.append(.init(gesture: gesture, features: features))
+    addTrainingSample(.init(gesture: gesture, features: features))
+  }
+  func addTrainingSample(_ sample: HandPoseTemplate) {
+    handPoseTemplates.append(sample)
+    let gesture = sample.gesture
     let samples = handPoseTemplates.filter { $0.gesture == gesture }
     if samples.count > 10 {
       let removeCount = samples.count - 10
@@ -279,6 +297,13 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
       return handMotionTemplates.filter { $0.gesture == gesture }.count
     }
     return handPoseTemplates.filter { $0.gesture == gesture }.count
+  }
+  var coreMLTrainingReady: Bool {
+    let staticSamples = Dictionary(grouping: handPoseTemplates.filter {
+      $0.gesture.category == .staticPose
+    }, by: \.gesture)
+    guard (staticSamples[.unknown]?.count ?? 0) >= 10 else { return false }
+    return staticSamples.filter { $0.key != .unknown && $0.value.count >= 10 }.count >= 2
   }
   func log(_ text: String) {
     commandLog.insert("\(Date.now.formatted(date: .omitted, time: .standard))  \(text)", at: 0)

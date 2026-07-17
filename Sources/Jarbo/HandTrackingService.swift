@@ -1,28 +1,23 @@
 import AVFoundation
 import CoreGraphics
-import Vision
 
-struct TrackedHand: Identifiable {
-  let id: HandSide
-  let points: [VNHumanHandPoseObservation.JointName: CGPoint]
-  let gesture: GestureKind
-  let confidence: Float
-}
-
-final class HandTrackingService: NSObject, ObservableObject,
+final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable,
   AVCaptureVideoDataOutputSampleBufferDelegate
 {
   let session = AVCaptureSession()
   @Published var hands: [TrackedHand] = []
   @Published var running = false
+  @Published var personalizedModelStatus = "CORE ML NOT TRAINED"
   var roleProvider: (() -> (HandRole, HandRole))?
   var bindingsProvider: (() -> [ActionBinding])?
   var personalTemplatesProvider: (() -> [HandPoseTemplate])?
   var priorTemplatesProvider: (() -> [HandPoseTemplate])?
   var motionTemplatesProvider: (() -> [HandMotionTemplate])?
+  var personalizedClassifier: PersonalizedGestureClassifier?
   var automation: AutomationService?
+  private let detector: HandLandmarkDetector = AppleVisionHandDetector()
   private let queue = DispatchQueue(label: "jarbo.vision", qos: .userInteractive)
-  private var smooth: [HandSide: [VNHumanHandPoseObservation.JointName: CGPoint]] = [:]
+  private var smooth: [HandSide: [HandJoint: CGPoint]] = [:]
   private var history: [HandSide: [(Date, CGPoint)]] = [:]
   private var activePinch: [HandSide: GestureKind] = [:]
   private var pinchCandidate: [HandSide: (GestureKind, Int)] = [:]
@@ -32,7 +27,7 @@ final class HandTrackingService: NSObject, ObservableObject,
   private var activeBindings: [HandSide: [ActionBinding]] = [:]
   private var missingFrames: [HandSide: Int] = [:]
   private var motionTrainingHistory: [HandSide: [(Date, [Double])]] = [:]
-  private let fingertipJoints: Set<VNHumanHandPoseObservation.JointName> = [
+  private let fingertipJoints: Set<HandJoint> = [
     .thumbTip, .indexTip, .middleTip, .ringTip, .littleTip,
   ]
   func start() {
@@ -90,32 +85,21 @@ final class HandTrackingService: NSObject, ObservableObject,
     from connection: AVCaptureConnection
   ) {
     guard let pixel = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-    let request = VNDetectHumanHandPoseRequest()
-    request.maximumHandCount = 2
-    let handler = VNImageRequestHandler(cvPixelBuffer: pixel, orientation: .up, options: [:])
-    guard (try? handler.perform([request])) != nil else { return }
-    process(request.results ?? [])
+    guard let frames = try? detector.detect(in: pixel) else { return }
+    process(frames)
   }
-  private func process(_ observations: [VNHumanHandPoseObservation]) {
+  private func process(_ observations: [HandLandmarkFrame]) {
     var tracked: [TrackedHand] = []
-    var candidates:
-      [(
-        observation: VNHumanHandPoseObservation,
-        points: [VNHumanHandPoseObservation.JointName: VNRecognizedPoint], side: HandSide
-      )] = observations.compactMap { observation in
-        guard let points = try? observation.recognizedPoints(.all) else { return nil }
-        return (observation, points, inferSide(observation, points))
-      }
+    var candidates = observations
     if candidates.count == 2, candidates[0].side == candidates[1].side {
-      candidates.sort { displayX($0.points) < displayX($1.points) }
+      candidates.sort { displayX($0.landmarks) < displayX($1.landmarks) }
       candidates[0].side = .left
       candidates[1].side = .right
     }
     for candidate in candidates {
-      let recognized = candidate.points
+      let recognized = candidate.landmarks
       let side = candidate.side
-      var points: [VNHumanHandPoseObservation.JointName: CGPoint] = [:]
-      var confidence: Float = 1
+      var points: [HandJoint: CGPoint] = [:]
       for (joint, p) in recognized where p.confidence > 0.35 {
         // The preview is explicitly mirrored like a selfie. Vision reads the unmirrored,
         // landscape pixel buffer, so mirror only X when converting into preview coordinates.
@@ -125,12 +109,14 @@ final class HandTrackingService: NSObject, ObservableObject,
           p.confidence > 0.78 ? (fingertipJoints.contains(joint) ? 0.50 : 0.32) : 0.22
         points[joint] = CGPoint(
           x: old.x + (raw.x - old.x) * alpha, y: old.y + (raw.y - old.y) * alpha)
-        confidence = min(confidence, p.confidence)
       }
       smooth[side] = points
       recordMotionFrame(points, side: side)
       let gesture = classify(points, side: side)
-      tracked.append(.init(id: side, points: points, gesture: gesture, confidence: confidence))
+      tracked.append(
+        .init(
+          id: side, points: points, gesture: gesture, confidence: candidate.confidence,
+          backend: candidate.backend))
       dispatch(side: side, gesture: gesture, points: points)
     }
     let seen = Set(tracked.map(\.id))
@@ -147,29 +133,15 @@ final class HandTrackingService: NSObject, ObservableObject,
       }
     }
   }
-  private func inferSide(
-    _ observation: VNHumanHandPoseObservation,
-    _ p: [VNHumanHandPoseObservation.JointName: VNRecognizedPoint]
-  ) -> HandSide {
-    switch observation.chirality {
-    case .left: return .left
-    case .right: return .right
-    default: break
-    }
-    guard let thumb = p[.thumbTip], let little = p[.littleTip] else {
-      return .left
-    }
-    return thumb.location.x < little.location.x ? .left : .right
-  }
   private func displayX(
-    _ p: [VNHumanHandPoseObservation.JointName: VNRecognizedPoint]
+    _ p: [HandJoint: HandLandmark]
   ) -> CGFloat {
     1 - (p[.wrist]?.location.x ?? p[.middleMCP]?.location.x ?? 0.5)
   }
-  private func classify(_ p: [VNHumanHandPoseObservation.JointName: CGPoint], side: HandSide)
+  private func classify(_ p: [HandJoint: CGPoint], side: HandSide)
     -> GestureKind
   {
-    func d(_ a: VNHumanHandPoseObservation.JointName, _ b: VNHumanHandPoseObservation.JointName)
+    func d(_ a: HandJoint, _ b: HandJoint)
       -> CGFloat
     {
       guard let x = p[a], let y = p[b] else { return 9 }
@@ -177,10 +149,10 @@ final class HandTrackingService: NSObject, ObservableObject,
     }
     let palm = max(d(.indexMCP, .littleMCP), d(.wrist, .middleMCP) * 0.72, 0.04)
     if let pinch = detectFingerContact(p, side: side, palm: palm) { return pinch }
-    let tips: [VNHumanHandPoseObservation.JointName] = [
+    let tips: [HandJoint] = [
       .indexTip, .middleTip, .ringTip, .littleTip,
     ]
-    let pips: [VNHumanHandPoseObservation.JointName] = [
+    let pips: [HandJoint] = [
       .indexPIP, .middlePIP, .ringPIP, .littlePIP,
     ]
     let extended = zip(tips, pips).map { d($0.0, .wrist) > d($0.1, .wrist) * 1.10 }
@@ -191,6 +163,14 @@ final class HandTrackingService: NSObject, ObservableObject,
       return swipe
     }
     if let motion = closestMotionTemplate(side: side) { return motion }
+    if let features = Self.poseFeatures(p),
+      let prediction = personalizedClassifier?.predict(features: features)
+    {
+      if prediction.gesture == .unknown, prediction.confidence >= 0.62 { return .unknown }
+      if prediction.gesture.category == .staticPose, prediction.confidence >= 0.72 {
+        return prediction.gesture
+      }
+    }
     if let trained = closestTemplate(
       to: p, templates: personalTemplatesProvider?() ?? [], maxError: 0.13, margin: 0.028,
       allowContacts: true)
@@ -235,7 +215,7 @@ final class HandTrackingService: NSObject, ObservableObject,
     return .unknown
   }
   private func detectFingerContact(
-    _ points: [VNHumanHandPoseObservation.JointName: CGPoint], side: HandSide, palm: CGFloat
+    _ points: [HandJoint: CGPoint], side: HandSide, palm: CGFloat
   ) -> GestureKind? {
     guard let thumb = points[.thumbTip], let wrist = points[.wrist] else {
       activePinch.removeValue(forKey: side)
@@ -244,8 +224,7 @@ final class HandTrackingService: NSObject, ObservableObject,
     }
     let targets:
       [(
-        gesture: GestureKind, tip: VNHumanHandPoseObservation.JointName,
-        mcp: VNHumanHandPoseObservation.JointName
+        gesture: GestureKind, tip: HandJoint, mcp: HandJoint
       )] = [
         (.pinch, .indexTip, .indexMCP),
         (.middlePinch, .middleTip, .middleMCP),
@@ -311,7 +290,7 @@ final class HandTrackingService: NSObject, ObservableObject,
     return gesture
   }
   private func dispatch(
-    side: HandSide, gesture: GestureKind, points: [VNHumanHandPoseObservation.JointName: CGPoint]
+    side: HandSide, gesture: GestureKind, points: [HandJoint: CGPoint]
   ) {
     DispatchQueue.main.async {
       let roles = self.roleProvider?()
@@ -358,11 +337,36 @@ final class HandTrackingService: NSObject, ObservableObject,
     guard let points = hands.first(where: { $0.id == side })?.points else { return nil }
     return Self.poseFeatures(points, preserveOrientation: gesture.category == .orientation)
   }
+  func captureTrainingSample(for gesture: GestureKind, hand side: HandSide) -> HandPoseTemplate? {
+    guard let hand = hands.first(where: { $0.id == side }),
+      let features = Self.poseFeatures(
+        hand.points, preserveOrientation: gesture.category == .orientation)
+    else { return nil }
+    return .init(
+      gesture: gesture, features: features, backend: hand.backend, hand: side, capturedAt: Date())
+  }
   func captureRecentMotion(hand side: HandSide) -> [[Double]]? {
     queue.sync { Self.normalizedMotion(motionTrainingHistory[side] ?? []) }
   }
+  func trainPersonalizedModel(samples: [HandPoseTemplate]) {
+    guard let personalizedClassifier else {
+      personalizedModelStatus = "CORE ML UNAVAILABLE"
+      return
+    }
+    personalizedModelStatus = "TRAINING CORE ML…"
+    personalizedClassifier.train(samples: samples) { [weak self] result in
+      DispatchQueue.main.async {
+        switch result {
+        case .success(let count):
+          self?.personalizedModelStatus = "CORE ML READY · \(count) SAMPLES"
+        case .failure(let error):
+          self?.personalizedModelStatus = "TRAINING FAILED · \(error.localizedDescription.uppercased())"
+        }
+      }
+    }
+  }
   private func closestTemplate(
-    to points: [VNHumanHandPoseObservation.JointName: CGPoint], templates: [HandPoseTemplate],
+    to points: [HandJoint: CGPoint], templates: [HandPoseTemplate],
     maxError: Double, margin: Double, allowContacts: Bool
   ) -> GestureKind? {
     var distances: [GestureKind: [Double]] = [:]
@@ -389,9 +393,9 @@ final class HandTrackingService: NSObject, ObservableObject,
     return best.0
   }
   private static func poseFeatures(
-    _ points: [VNHumanHandPoseObservation.JointName: CGPoint], preserveOrientation: Bool = false
+    _ points: [HandJoint: CGPoint], preserveOrientation: Bool = false
   ) -> [Double]? {
-    let joints: [VNHumanHandPoseObservation.JointName] = [
+    let joints: [HandJoint] = [
       .thumbTip, .thumbIP, .thumbMP, .thumbCMC,
       .indexTip, .indexDIP, .indexPIP, .indexMCP,
       .middleTip, .middleDIP, .middlePIP, .middleMCP,
@@ -416,7 +420,7 @@ final class HandTrackingService: NSObject, ObservableObject,
     return result
   }
   private func recordMotionFrame(
-    _ points: [VNHumanHandPoseObservation.JointName: CGPoint], side: HandSide
+    _ points: [HandJoint: CGPoint], side: HandSide
   ) {
     guard let wrist = points[.wrist], let index = points[.indexTip],
       let indexMCP = points[.indexMCP], let littleMCP = points[.littleMCP],
@@ -424,7 +428,7 @@ final class HandTrackingService: NSObject, ObservableObject,
     else { return }
     let palm = max(hypot(indexMCP.x - littleMCP.x, indexMCP.y - littleMCP.y), 0.035)
     let fingerPairs:
-      [(VNHumanHandPoseObservation.JointName, VNHumanHandPoseObservation.JointName)] = [
+      [(HandJoint, HandJoint)] = [
         (.indexTip, .indexPIP), (.middleTip, .middlePIP), (.ringTip, .ringPIP),
         (.littleTip, .littlePIP),
       ]
