@@ -8,6 +8,7 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
   @Published var hands: [TrackedHand] = []
   @Published var running = false
   @Published var personalizedModelStatus = "CORE ML NOT TRAINED"
+  @Published var trainingCaptureStatus = "SHOW THE SELECTED HAND · WAITING FOR 21 JOINTS"
   var roleProvider: (() -> (HandRole, HandRole))?
   var bindingsProvider: (() -> [ActionBinding])?
   var personalTemplatesProvider: (() -> [HandPoseTemplate])?
@@ -18,6 +19,15 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
   private let detector: HandLandmarkDetector = AppleVisionHandDetector()
   private let queue = DispatchQueue(label: "jarbo.vision", qos: .userInteractive)
   private var smooth: [HandSide: [HandJoint: CGPoint]] = [:]
+  private var latestStablePoints: [HandSide: [HandJoint: CGPoint]] = [:]
+  private var latestBackend: [HandSide: HandDetectorBackend] = [:]
+  private var lastSeenAt: [HandSide: Date] = [:]
+  private var jointSeenAt: [HandSide: [HandJoint: Date]] = [:]
+  private var lastPublishedAt = Date.distantPast
+  private var lastTrainingStatusAt = Date.distantPast
+  private var configurationMode = false
+  private var lastPersonalPrediction:
+    [HandSide: (timestamp: Date, prediction: PersonalizedGestureClassifier.Prediction)] = [:]
   private var history: [HandSide: [(Date, CGPoint)]] = [:]
   private var activePinch: [HandSide: GestureKind] = [:]
   private var pinchCandidate: [HandSide: (GestureKind, Int)] = [:]
@@ -40,19 +50,42 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
     }
   }
   func stop() {
-    session.stopRunning()
-    DispatchQueue.main.async {
-      self.releaseControls(for: .left)
-      self.releaseControls(for: .right)
-      self.running = false
-      self.hands = []
+    queue.async { [weak self] in
+      guard let self else { return }
+      session.stopRunning()
+      smooth.removeAll()
+      latestStablePoints.removeAll()
+      lastSeenAt.removeAll()
+      jointSeenAt.removeAll()
+      DispatchQueue.main.async {
+        self.releaseControls(for: .left)
+        self.releaseControls(for: .right)
+        self.running = false
+        self.hands = []
+        self.trainingCaptureStatus = "CAMERA PAUSED"
+      }
+    }
+  }
+  func setConfigurationMode(_ enabled: Bool) {
+    queue.async { [weak self] in
+      self?.configurationMode = enabled
+      guard enabled, let self else { return }
+      DispatchQueue.main.async {
+        self.releaseControls(for: .left)
+        self.releaseControls(for: .right)
+        self.automation?.deactivatePointer()
+      }
     }
   }
   private func configure() {
     queue.async { [weak self] in
       guard let self else { return }
       session.beginConfiguration()
-      session.sessionPreset = .high
+      if session.canSetSessionPreset(.hd1280x720) {
+        session.sessionPreset = .hd1280x720
+      } else {
+        session.sessionPreset = .medium
+      }
       guard
         let camera = AVCaptureDevice.default(
           .builtInWideAngleCamera, for: .video, position: .front),
@@ -61,6 +94,17 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
         session.commitConfiguration()
         return
       }
+      do {
+        try camera.lockForConfiguration()
+        let target = CMTime(value: 1, timescale: 30)
+        if camera.activeFormat.videoSupportedFrameRateRanges.contains(where: {
+          $0.minFrameRate <= 30 && $0.maxFrameRate >= 30
+        }) {
+          camera.activeVideoMinFrameDuration = target
+          camera.activeVideoMaxFrameDuration = target
+        }
+        camera.unlockForConfiguration()
+      } catch {}
       if session.inputs.isEmpty, session.canAddInput(input) { session.addInput(input) }
       let output = AVCaptureVideoDataOutput()
       output.alwaysDiscardsLateVideoFrames = true
@@ -84,9 +128,11 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
     _ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
     from connection: AVCaptureConnection
   ) {
-    guard let pixel = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-    guard let frames = try? detector.detect(in: pixel) else { return }
-    process(frames)
+    autoreleasepool {
+      guard let pixel = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+      guard let frames = try? detector.detect(in: pixel) else { return }
+      process(frames)
+    }
   }
   private func process(_ observations: [HandLandmarkFrame]) {
     var tracked: [TrackedHand] = []
@@ -99,29 +145,64 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
     for candidate in candidates {
       let recognized = candidate.landmarks
       let side = candidate.side
-      var points: [HandJoint: CGPoint] = [:]
-      for (joint, p) in recognized where p.confidence > 0.35 {
+      // Retain a recent joint briefly when Vision dips below confidence for one frame.
+      // This prevents pose capture from failing because of a single missing DIP/MCP point.
+      var points = smooth[side] ?? [:]
+      var jointTimes = jointSeenAt[side] ?? [:]
+      for (joint, p) in recognized where p.confidence > 0.15 {
         // The preview is explicitly mirrored like a selfie. Vision reads the unmirrored,
         // landscape pixel buffer, so mirror only X when converting into preview coordinates.
         let raw = CGPoint(x: 1 - p.location.x, y: 1 - p.location.y)
         let old = smooth[side]?[joint] ?? raw
         let alpha: CGFloat =
-          p.confidence > 0.78 ? (fingertipJoints.contains(joint) ? 0.50 : 0.32) : 0.22
+          p.confidence > 0.78
+          ? (fingertipJoints.contains(joint) ? 0.50 : 0.32) : (p.confidence > 0.35 ? 0.22 : 0.12)
         points[joint] = CGPoint(
           x: old.x + (raw.x - old.x) * alpha, y: old.y + (raw.y - old.y) * alpha)
+        jointTimes[joint] = candidate.timestamp
+      }
+      points = points.filter {
+        candidate.timestamp.timeIntervalSince(jointTimes[$0.key] ?? .distantPast) < 0.35
       }
       smooth[side] = points
+      jointSeenAt[side] = jointTimes
+      latestStablePoints[side] = points
+      latestBackend[side] = candidate.backend
+      lastSeenAt[side] = candidate.timestamp
       recordMotionFrame(points, side: side)
-      let gesture = classify(points, side: side)
+      // Configuration mode keeps landmark collection active for training, but avoids
+      // expensive classification and prevents controls firing behind the editor.
+      let gesture = configurationMode ? GestureKind.unknown : classify(points, side: side)
       tracked.append(
         .init(
           id: side, points: points, gesture: gesture, confidence: candidate.confidence,
           backend: candidate.backend))
-      dispatch(side: side, gesture: gesture, points: points)
+      if !configurationMode { dispatch(side: side, gesture: gesture, points: points) }
     }
     let seen = Set(tracked.map(\.id))
+    let now = Date()
+    for side in HandSide.allCases where !seen.contains(side) {
+      if now.timeIntervalSince(lastSeenAt[side] ?? .distantPast) > 0.35 {
+        smooth.removeValue(forKey: side)
+        latestStablePoints.removeValue(forKey: side)
+        latestBackend.removeValue(forKey: side)
+        jointSeenAt.removeValue(forKey: side)
+      }
+    }
+    let shouldPublish = !configurationMode && now.timeIntervalSince(lastPublishedAt) >= (1.0 / 12.0)
+    if shouldPublish { lastPublishedAt = now }
+    let shouldPublishTrainingStatus =
+      configurationMode && now.timeIntervalSince(lastTrainingStatusAt) >= 0.25
+    if shouldPublishTrainingStatus { lastTrainingStatusAt = now }
+    let readiness = tracked.map { "\($0.id.rawValue.uppercased()) \($0.points.count)/21" }
+      .joined(separator: " · ")
     DispatchQueue.main.async {
-      self.hands = tracked
+      if shouldPublish { self.hands = tracked }
+      if shouldPublish || shouldPublishTrainingStatus {
+        self.trainingCaptureStatus = readiness.isEmpty
+          ? "SHOW THE SELECTED HAND · WAITING FOR 21 JOINTS"
+          : "LANDMARKS · \(readiness)"
+      }
       for side in HandSide.allCases {
         if seen.contains(side) {
           self.missingFrames[side] = 0
@@ -164,7 +245,7 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
     }
     if let motion = closestMotionTemplate(side: side) { return motion }
     if let features = Self.poseFeatures(p),
-      let prediction = personalizedClassifier?.predict(features: features)
+      let prediction = personalizedPrediction(features: features, side: side)
     {
       if prediction.gesture == .unknown, prediction.confidence >= 0.62 { return .unknown }
       if prediction.gesture.category == .staticPose, prediction.confidence >= 0.72 {
@@ -213,6 +294,19 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
       return prior
     }
     return .unknown
+  }
+  private func personalizedPrediction(
+    features: [Double], side: HandSide
+  ) -> PersonalizedGestureClassifier.Prediction? {
+    let now = Date()
+    if let cached = lastPersonalPrediction[side],
+      now.timeIntervalSince(cached.timestamp) < (1.0 / 15.0)
+    {
+      return cached.prediction
+    }
+    guard let prediction = personalizedClassifier?.predict(features: features) else { return nil }
+    lastPersonalPrediction[side] = (now, prediction)
+    return prediction
   }
   private func detectFingerContact(
     _ points: [HandJoint: CGPoint], side: HandSide, palm: CGFloat
@@ -338,12 +432,20 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
     return Self.poseFeatures(points, preserveOrientation: gesture.category == .orientation)
   }
   func captureTrainingSample(for gesture: GestureKind, hand side: HandSide) -> HandPoseTemplate? {
-    guard let hand = hands.first(where: { $0.id == side }),
-      let features = Self.poseFeatures(
-        hand.points, preserveOrientation: gesture.category == .orientation)
-    else { return nil }
-    return .init(
-      gesture: gesture, features: features, backend: hand.backend, hand: side, capturedAt: Date())
+    let result: HandPoseTemplate? = queue.sync {
+      guard Date().timeIntervalSince(lastSeenAt[side] ?? .distantPast) < 0.35,
+        let points = latestStablePoints[side], points.count == HandJoint.allCases.count,
+        let features = Self.poseFeatures(
+          points, preserveOrientation: gesture.category == .orientation)
+      else { return nil }
+      return .init(
+        gesture: gesture, features: features, backend: latestBackend[side], hand: side,
+        capturedAt: Date())
+    }
+    trainingCaptureStatus = result == nil
+      ? "CAPTURE FAILED · KEEP THE FULL \(side.rawValue.uppercased()) HAND VISIBLE"
+      : "SAVED \(gesture.displayName.uppercased()) · 21/21 JOINTS"
+    return result
   }
   func captureRecentMotion(hand side: HandSide) -> [[Double]]? {
     queue.sync { Self.normalizedMotion(motionTrainingHistory[side] ?? []) }

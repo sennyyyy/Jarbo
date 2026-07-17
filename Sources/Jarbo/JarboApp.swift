@@ -7,13 +7,17 @@ import SwiftUI
   var body: some Scene { Settings { EmptyView() } }
 }
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   let state = AppState(), tracker = HandTrackingService(), automation = AutomationService(),
     monitor = SystemMonitor(), voice = VoiceService(), analyzer = ImageAnalyzer(),
     imageGen = ImageGenerationService(), gestureClassifier = PersonalizedGestureClassifier()
   var window: NSWindow!
   var statusItem: NSStatusItem!
+  private var hudMenuItem: NSMenuItem!
+  private var trackingMenuItem: NSMenuItem!
+  private var modelMenuItem: NSMenuItem!
   func applicationDidFinishLaunching(_ notification: Notification) {
+    NSApp.setActivationPolicy(.regular)
     automation.state = state
     automation.sensitivityProvider = { [weak state] in state?.pointerSensitivity ?? 0.5 }
     tracker.automation = automation
@@ -40,10 +44,13 @@ import SwiftUI
     window.makeKeyAndOrderFront(nil)
     window.collectionBehavior = [.canJoinAllSpaces, .fullScreenPrimary]
     setupMenu()
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(toggleHUD), name: .jarboToggleHUD, object: nil)
     requestAccessibility()
   }
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
   func applicationWillTerminate(_ notification: Notification) {
+    state.flushSave()
     automation.releaseAllMouseButtons()
     automation.deactivatePointer()
     tracker.stop()
@@ -53,18 +60,53 @@ import SwiftUI
     statusItem.button?.image = NSImage(
       systemSymbolName: "circle.hexagongrid.fill", accessibilityDescription: "Jarbo")
     let menu = NSMenu()
-    menu.addItem(withTitle: "Open Jarbo HUD", action: #selector(showHUD), keyEquivalent: "j")
-    menu.addItem(withTitle: "Start camera", action: #selector(startCamera), keyEquivalent: "")
+    menu.delegate = self
+    hudMenuItem = menuItem("Hide Jarbo HUD", action: #selector(toggleHUD), key: "j")
+    menu.addItem(hudMenuItem)
+    menu.addItem(menuItem("Configure Controls…", action: #selector(showControls), key: ","))
+    trackingMenuItem = menuItem(
+      "Pause Hand Controls", action: #selector(toggleTracking), key: "")
+    menu.addItem(trackingMenuItem)
+    modelMenuItem = NSMenuItem(title: tracker.personalizedModelStatus, action: nil, keyEquivalent: "")
+    modelMenuItem.isEnabled = false
+    menu.addItem(modelMenuItem)
     menu.addItem(.separator())
-    menu.addItem(
-      withTitle: "Quit Jarbo", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    menu.addItem(menuItem("Quit Jarbo", action: #selector(NSApplication.terminate(_:)), key: "q"))
     statusItem.menu = menu
   }
+  private func menuItem(_ title: String, action: Selector, key: String) -> NSMenuItem {
+    let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+    item.target = self
+    return item
+  }
+  func menuNeedsUpdate(_ menu: NSMenu) {
+    hudMenuItem.title = window.isVisible ? "Hide Jarbo HUD" : "Show Jarbo HUD"
+    trackingMenuItem.title = tracker.running ? "Pause Hand Controls" : "Resume Hand Controls"
+    modelMenuItem.title = tracker.personalizedModelStatus
+  }
   @objc private func showHUD() {
+    state.showHUD = true
     window.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
   }
-  @objc private func startCamera() { tracker.start() }
+  @objc private func toggleHUD() {
+    if window.isVisible {
+      window.orderOut(nil)
+    } else {
+      showHUD()
+    }
+  }
+  @objc private func showControls() {
+    showHUD()
+    NotificationCenter.default.post(name: .jarboShowActions, object: nil)
+  }
+  @objc private func toggleTracking() {
+    tracker.running ? tracker.stop() : tracker.start()
+  }
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+    if !flag { showHUD() }
+    return true
+  }
   private func requestAccessibility() {
     let options =
       [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary

@@ -31,6 +31,12 @@ struct ControlCenterView: View {
       imageGen.prompt = note.object as? String ?? ""
       showImageGen = true
     }
+    .onReceive(NotificationCenter.default.publisher(for: .jarboShowActions)) { _ in
+      showBindings = true
+    }
+    .onChange(of: showBindings) { _, visible in
+      tracker.setConfigurationMode(visible)
+    }
     .sheet(isPresented: $showBindings) { BindingsEditor() }
     .sheet(isPresented: $showImageGen) { ImageGeneratorView() }
     .sheet(isPresented: $showExtras) { ExtraWidgetsView() }
@@ -450,6 +456,7 @@ struct BindingsEditor: View {
       HStack(spacing: 8) {
         Image(systemName: tracker.personalizedModelStatus.contains("READY") ? "brain.fill" : "brain")
         Text(tracker.personalizedModelStatus)
+        Text(tracker.trainingCaptureStatus).foregroundStyle(.green)
         Text("Train No gesture and at least two static gestures (10 samples each).")
           .foregroundStyle(.secondary)
       }.font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -522,7 +529,10 @@ struct BindingsEditor: View {
       Text(
         "Shell commands and Accessibility actions run only when you explicitly bind and trigger them."
       ).font(.caption).foregroundStyle(.secondary)
-    }.padding(22).frame(minWidth: 1050, minHeight: 500)
+    }
+    .pickerStyle(.menu)
+    .onDisappear { tracker.setConfigurationMode(false) }
+    .padding(22).frame(minWidth: 1050, minHeight: 500)
   }
 }
 

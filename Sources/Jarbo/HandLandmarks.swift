@@ -41,17 +41,22 @@ protocol HandLandmarkDetector: AnyObject {
 /// Its output is converted immediately into Jarbo's detector-neutral joint names.
 final class AppleVisionHandDetector: HandLandmarkDetector {
   let backend = HandDetectorBackend.appleVision
-
-  func detect(in pixelBuffer: CVPixelBuffer) throws -> [HandLandmarkFrame] {
+  private let request: VNDetectHumanHandPoseRequest = {
     let request = VNDetectHumanHandPoseRequest()
     request.maximumHandCount = 2
+    return request
+  }()
+
+  func detect(in pixelBuffer: CVPixelBuffer) throws -> [HandLandmarkFrame] {
     let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
     try handler.perform([request])
     return (request.results ?? []).compactMap { observation in
       guard let recognized = try? observation.recognizedPoints(.all) else { return nil }
       var landmarks: [HandJoint: HandLandmark] = [:]
       var confidence: Float = 1
-      for (visionJoint, point) in recognized where point.confidence > 0.35 {
+      // Keep lower-confidence joints for short-lived capture stabilization. Runtime
+      // classification still applies stricter confidence and recency requirements.
+      for (visionJoint, point) in recognized where point.confidence > 0.15 {
         guard let joint = Self.jointMap[visionJoint] else { continue }
         landmarks[joint] = .init(location: point.location, confidence: point.confidence, depth: nil)
         confidence = min(confidence, point.confidence)

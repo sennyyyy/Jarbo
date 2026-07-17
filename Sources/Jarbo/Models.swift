@@ -223,19 +223,21 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
 }
 
 @MainActor final class AppState: ObservableObject {
-  @Published var theme: JarboTheme = .arcReactor { didSet { save() } }
-  @Published var leftRole: HandRole = .pointer { didSet { save() } }
-  @Published var rightRole: HandRole = .controls { didSet { save() } }
-  @Published var bindings: [ActionBinding] = AppState.defaults { didSet { save() } }
-  @Published var pointerSensitivity = 0.5 { didSet { save() } }
-  @Published var handPoseTemplates: [HandPoseTemplate] = [] { didSet { save() } }
-  @Published var handMotionTemplates: [HandMotionTemplate] = [] { didSet { save() } }
+  @Published var theme: JarboTheme = .arcReactor { didSet { scheduleSave() } }
+  @Published var leftRole: HandRole = .pointer { didSet { scheduleSave() } }
+  @Published var rightRole: HandRole = .controls { didSet { scheduleSave() } }
+  @Published var bindings: [ActionBinding] = AppState.defaults { didSet { scheduleSave() } }
+  @Published var pointerSensitivity = 0.5 { didSet { scheduleSave() } }
+  @Published var handPoseTemplates: [HandPoseTemplate] = [] { didSet { scheduleSave() } }
+  @Published var handMotionTemplates: [HandMotionTemplate] = [] { didSet { scheduleSave() } }
   private(set) var bundledGesturePriors: [HandPoseTemplate] = []
-  @Published var notes = "Welcome back. Jarbo systems are online." { didSet { save() } }
+  @Published var notes = "Welcome back. Jarbo systems are online." { didSet { scheduleSave() } }
   @Published var showHUD = true
   @Published var launchComplete = false
   @Published var selectedViewerURL: URL?
   @Published var commandLog: [String] = ["JARBO INITIALIZED"]
+  private var saveWorkItem: DispatchWorkItem?
+  private var isLoading = false
   static let defaults: [ActionBinding] = [
     .init(name: "Primary click", hand: .left, gesture: .pinch, action: .leftClick),
     .init(name: "Context click", hand: .left, gesture: .middlePinch, action: .rightClick),
@@ -251,8 +253,10 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     .init(name: "App Expose", hand: .right, gesture: .threeFingers, action: .appExpose),
   ]
   init() {
+    isLoading = true
     loadBundledPriors()
     load()
+    isLoading = false
   }
   var effectivePoseTemplates: [HandPoseTemplate] {
     let personallyTrained = Set(handPoseTemplates.map(\.gesture))
@@ -271,20 +275,19 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
   func addTrainingSample(_ sample: HandPoseTemplate) {
     handPoseTemplates.append(sample)
     let gesture = sample.gesture
-    let samples = handPoseTemplates.filter { $0.gesture == gesture }
-    if samples.count > 10 {
-      let removeCount = samples.count - 10
-      let removeIDs = Set(samples.prefix(removeCount).map(\.id))
-      handPoseTemplates.removeAll { removeIDs.contains($0.id) }
+    while handPoseTemplates.filter({ $0.gesture == gesture }).count > 10,
+      let oldest = handPoseTemplates.firstIndex(where: { $0.gesture == gesture })
+    {
+      handPoseTemplates.remove(at: oldest)
     }
     log("TRAINED \(gesture.displayName.uppercased()) · \(sampleCount(for: gesture))/10 SAMPLES")
   }
   func addMotionTrainingSample(_ frames: [[Double]], for gesture: GestureKind) {
     handMotionTemplates.append(.init(gesture: gesture, frames: frames))
-    let samples = handMotionTemplates.filter { $0.gesture == gesture }
-    if samples.count > 10 {
-      let removeIDs = Set(samples.prefix(samples.count - 10).map(\.id))
-      handMotionTemplates.removeAll { removeIDs.contains($0.id) }
+    while handMotionTemplates.filter({ $0.gesture == gesture }).count > 10,
+      let oldest = handMotionTemplates.firstIndex(where: { $0.gesture == gesture })
+    {
+      handMotionTemplates.remove(at: oldest)
     }
     log("TRAINED \(gesture.displayName.uppercased()) · \(sampleCount(for: gesture))/10 SAMPLES")
   }
@@ -369,7 +372,19 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     }
     return result
   }
-  private func save() {
+  private func scheduleSave() {
+    guard !isLoading else { return }
+    saveWorkItem?.cancel()
+    let work = DispatchWorkItem { [weak self] in self?.saveNow() }
+    saveWorkItem = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+  }
+  func flushSave() {
+    saveWorkItem?.cancel()
+    saveWorkItem = nil
+    saveNow()
+  }
+  private func saveNow() {
     let s = Saved(
       schemaVersion: 7, theme: theme, leftRole: leftRole, rightRole: rightRole,
       bindings: bindings, pointerSensitivity: pointerSensitivity,

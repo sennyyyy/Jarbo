@@ -61,7 +61,7 @@ import Foundation
       p.executableURL = URL(fileURLWithPath: "/usr/bin/say")
       p.arguments = [binding.value]
       try? p.run()
-    case .toggleHUD: state?.showHUD.toggle()
+    case .toggleHUD: NotificationCenter.default.post(name: .jarboToggleHUD, object: nil)
     case .note: state?.notes = binding.value
     case .generateImage:
       NotificationCenter.default.post(name: .jarboGenerateImage, object: binding.value)
@@ -374,4 +374,6 @@ import Foundation
 }
 extension Notification.Name {
   static let jarboGenerateImage = Notification.Name("JarboGenerateImage")
+  static let jarboToggleHUD = Notification.Name("JarboToggleHUD")
+  static let jarboShowActions = Notification.Name("JarboShowActions")
 }

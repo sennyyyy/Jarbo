@@ -17,6 +17,8 @@ Jarbo separates landmark detection from gesture interpretation:
 - Choose `Build Core ML Model`. Training occurs off the main UI thread.
 - The compiled model is stored under `Application Support/Jarbo/Models` and loaded on launch.
 
+The control editor displays tracking readiness as `LEFT 21/21` or `RIGHT 21/21`. Pose capture reads a short-lived stable detector snapshot rather than the throttled HUD overlay. A briefly low-confidence finger joint is retained, but the snapshot expires after 0.35 seconds without seeing that hand so an old pose cannot be captured accidentally.
+
 The model receives 40 values: normalized X/Y coordinates for 20 finger joints relative to the wrist and palm width. Wrist rotation is normalized for static gestures. Camera frames are not saved.
 
 ## Detector backends
