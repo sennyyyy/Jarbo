@@ -93,7 +93,7 @@ Model build/delete/rebuild/relaunch behavior must still pass the v1.0.9 hardware
 - [Phase 0 review](docs/V1.0.9-PHASE-0-REVIEW.md)
 - [Proposed version scope](docs/NEXT-VERSION.md)
 
-The `13c7522` candidate passes clean-checkout verification. The current Phase 0 and release decision remains **HOLD** until CI, manual safety/permission tests, performance gates, and soak testing pass.
+The `13c7522` candidate passes clean-checkout verification and GitHub CI. The current Phase 0 and release decision remains **HOLD** until manual safety/permission tests, performance gates, and soak testing pass.
 
 ## Publishing a prerelease
 
