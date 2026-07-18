@@ -27,17 +27,22 @@ if ! git remote get-url origin >/dev/null 2>&1; then
   print -u2 "No origin remote is configured. Add one with: git remote add origin <repository-url>"
   exit 66
 fi
+CURRENT_BRANCH="$(git branch --show-current)"
+if [[ "$CURRENT_BRANCH" != "main" ]]; then
+  print -u2 "Releases must be published from main; current branch is $CURRENT_BRANCH."
+  exit 68
+fi
 
 CURRENT_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Info.plist 2>/dev/null || print 0)
 NEXT_BUILD=$((CURRENT_BUILD + 1))
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" Info.plist
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEXT_BUILD" Info.plist
 
-./build-app.sh
+./verify.sh
 ARCHIVE="dist/Jarbo-$VERSION.zip"
 ditto -c -k --norsrc --keepParent dist/Jarbo.app "$ARCHIVE"
 
-git add .github .gitignore Info.plist Package.swift README.md Sources build-app.sh docs patch-sdk-interfaces.sh release-notes release.sh
+git add .github .gitignore Info.plist Jarbo_Project_Roadmap.md Package.swift README.md RELEASE_NOTES.md Sources Tests build-app.sh docs patch-sdk-interfaces.sh preflight.sh release-notes release.sh verify.sh
 git commit -m "Release $TAG"
 git tag -a "$TAG" -F "$NOTES"
 git push origin HEAD

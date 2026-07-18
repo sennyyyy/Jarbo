@@ -3,14 +3,14 @@ set -euo pipefail
 ROOT="${0:A:h}"
 cd "$ROOT"
 mkdir -p "$ROOT/.build/release"
-"$ROOT/patch-sdk-interfaces.sh" >/dev/null
+SWIFTC="$(xcrun --find swiftc)"
+SDK="$(xcrun --sdk macosx --show-sdk-path)"
 for ARCH in arm64 x86_64; do
   mkdir -p "$ROOT/.build/ModuleCache-$ARCH"
-  /usr/bin/swiftc -parse-as-library -O -module-name Jarbo \
+  "$SWIFTC" -parse-as-library -O -swift-version 6 -module-name Jarbo \
     -target "$ARCH-apple-macosx14.0" \
-    -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk \
+    -sdk "$SDK" \
     -module-cache-path "$ROOT/.build/ModuleCache-$ARCH" \
-    -vfsoverlay "$ROOT/.build/sdk-patch/overlay.yaml" \
     "$ROOT"/Sources/Jarbo/*.swift \
     -o "$ROOT/.build/release/Jarbo-$ARCH"
 done

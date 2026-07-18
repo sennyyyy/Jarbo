@@ -32,7 +32,7 @@ enum JarboTheme: String, CaseIterable, Codable, Identifiable {
   }
 }
 
-enum HandSide: String, Codable, CaseIterable {
+enum HandSide: String, Codable, CaseIterable, Sendable {
   case left = "Left"
   case right = "Right"
 }
@@ -47,7 +47,7 @@ enum GestureCategory: String, CaseIterable {
   case motion = "Dynamic"
   case orientation = "Orientation"
 }
-enum GestureKind: String, Codable, CaseIterable, Identifiable {
+enum GestureKind: String, Codable, CaseIterable, Identifiable, Sendable {
   case unknown = "No gesture"
   // Static configurations (legacy raw values are retained so saved v1 configurations decode).
   case point = "Point"
@@ -142,11 +142,20 @@ enum GestureKind: String, Codable, CaseIterable, Identifiable {
     .palmCamera, .backCamera, .palmUp, .palmDown, .palmLeft, .palmRight, .fingersUp,
     .fingersDown, .tiltedLeft, .tiltedRight,
   ]
+  static let trainingByCategory: [GestureCategory: [GestureKind]] =
+    Dictionary(grouping: trainingCatalog, by: \.category)
   static let selectableGestures: [GestureKind] =
     trainingCatalog
     + [.thumbsDown, .pointLeft, .pointRight, .pointUp, .pointDown, .customA, .customB, .customC]
+  static let coreMLCatalog: [GestureKind] = {
+    let contacts: Set<GestureKind> = [.pinch, .middlePinch, .thumbRing]
+    return (trainingCatalog + [.customA, .customB, .customC]).filter {
+      $0.category == .staticPose && !contacts.contains($0)
+    }
+  }()
+  var isCoreMLEligible: Bool { Self.coreMLCatalog.contains(self) }
 }
-enum ActionKind: String, Codable, CaseIterable, Identifiable {
+enum ActionKind: String, Codable, CaseIterable, Identifiable, Sendable {
   case leftClick = "Left click"
   case rightClick = "Right click"
   case middleClick = "Middle click"
@@ -172,7 +181,7 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
   case generateImage = "Generate image"
   var id: String { rawValue }
 }
-struct ActionBinding: Identifiable, Codable, Hashable {
+struct ActionBinding: Identifiable, Codable, Hashable, Sendable {
   var id = UUID()
   var name: String
   var hand: HandSide
@@ -180,6 +189,18 @@ struct ActionBinding: Identifiable, Codable, Hashable {
   var action: ActionKind
   var value: String = ""
   var enabled = true
+  var validationError: String? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    switch action {
+    case .openURL:
+      guard let url = URL(string: trimmed), ["http", "https"].contains(url.scheme?.lowercased() ?? "")
+      else { return "Enter a valid http or https URL." }
+    case .openApp, .openFile, .webSearch, .shell, .speak, .note, .generateImage:
+      if trimmed.isEmpty { return "\(action.rawValue) requires a value." }
+    default: break
+    }
+    return nil
+  }
 }
 struct HandPoseTemplate: Identifiable, Codable, Hashable {
   var id: Int { features.hashValue ^ gesture.rawValue.hashValue }
@@ -204,6 +225,46 @@ struct HandMotionTemplate: Identifiable, Codable, Hashable {
   var id: Int { frames.hashValue ^ gesture.rawValue.hashValue }
   var gesture: GestureKind
   var frames: [[Double]]
+}
+
+struct CoreMLClassReadiness: Identifiable, Equatable {
+  var id: GestureKind { gesture }
+  let gesture: GestureKind
+  let count: Int
+  var complete: Bool { count >= 10 }
+}
+
+struct CoreMLTrainingReadiness: Equatable {
+  let noGestureCount: Int
+  let classes: [CoreMLClassReadiness]
+
+  var completedClassCount: Int { classes.filter(\.complete).count }
+  var canBuild: Bool { noGestureCount >= 10 && completedClassCount >= 2 }
+  var missingSummary: String {
+    guard !canBuild else { return "Ready to build from completed static classes." }
+    var needs: [String] = []
+    if noGestureCount < 10 { needs.append("\(10 - noGestureCount) No gesture") }
+    let remainingClasses = max(0, 2 - completedClassCount)
+    if remainingClasses > 0 {
+      let partial = classes.filter { !$0.complete && $0.count > 0 }
+        .sorted { $0.count == $1.count ? $0.gesture.displayName < $1.gesture.displayName : $0.count > $1.count }
+        .prefix(remainingClasses)
+      for row in partial { needs.append("\(10 - row.count) \(row.gesture.displayName)") }
+      if partial.count < remainingClasses {
+        needs.append("\(remainingClasses - partial.count) more complete static class\(remainingClasses - partial.count == 1 ? "" : "es")")
+      }
+    }
+    return "Still needed: " + needs.joined(separator: " + ")
+  }
+
+  static func evaluate(_ samples: [HandPoseTemplate]) -> CoreMLTrainingReadiness {
+    let grouped = Dictionary(grouping: samples.filter { $0.features.count == 40 }, by: \.gesture)
+    return .init(
+      noGestureCount: min(grouped[.unknown]?.count ?? 0, 10),
+      classes: GestureKind.coreMLCatalog.map {
+        .init(gesture: $0, count: min(grouped[$0]?.count ?? 0, 10))
+      })
+  }
 }
 struct WidgetPosition: Codable {
   var x: Double
@@ -230,15 +291,18 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
   @Published var pointerSensitivity = 0.5 { didSet { scheduleSave() } }
   @Published var handPoseTemplates: [HandPoseTemplate] = [] { didSet { scheduleSave() } }
   @Published var handMotionTemplates: [HandMotionTemplate] = [] { didSet { scheduleSave() } }
+  @Published var cameraEnabled = false { didSet { scheduleSave() } }
   private(set) var bundledGesturePriors: [HandPoseTemplate] = []
   @Published var notes = "Welcome back. Jarbo systems are online." { didSet { scheduleSave() } }
   @Published var showHUD = true
   @Published var launchComplete = false
   @Published var selectedViewerURL: URL?
   @Published var commandLog: [String] = ["JARBO INITIALIZED"]
+  @Published var trainingFeedback = "Choose a gesture and collect varied examples."
   private var saveWorkItem: DispatchWorkItem?
+  private let persistenceQueue = DispatchQueue(label: "jarbo.settings", qos: .utility)
   private var isLoading = false
-  static let defaults: [ActionBinding] = [
+  nonisolated static let defaults: [ActionBinding] = [
     .init(name: "Primary click", hand: .left, gesture: .pinch, action: .leftClick),
     .init(name: "Context click", hand: .left, gesture: .middlePinch, action: .rightClick),
     .init(name: "Middle click", hand: .left, gesture: .thumbRing, action: .middleClick),
@@ -273,6 +337,15 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     addTrainingSample(.init(gesture: gesture, features: features))
   }
   func addTrainingSample(_ sample: HandPoseTemplate) {
+    let existing = handPoseTemplates.filter { $0.gesture == sample.gesture }
+    let nearlyIdentical = existing.filter {
+      guard $0.features.count == sample.features.count, !sample.features.isEmpty else { return false }
+      let squared = zip($0.features, sample.features).reduce(0.0) { total, pair in
+        let delta = pair.0 - pair.1
+        return total + delta * delta
+      }
+      return sqrt(squared / Double(sample.features.count)) < 0.018
+    }.count
     handPoseTemplates.append(sample)
     let gesture = sample.gesture
     while handPoseTemplates.filter({ $0.gesture == gesture }).count > 10,
@@ -280,7 +353,11 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     {
       handPoseTemplates.remove(at: oldest)
     }
+    trainingFeedback = nearlyIdentical >= 2
+      ? "VARIETY WARNING · several \(gesture.displayName) captures are nearly identical. Change angle, distance, lighting, or finger spacing."
+      : "SAVED · \(trainingPrompt(for: gesture))"
     log("TRAINED \(gesture.displayName.uppercased()) · \(sampleCount(for: gesture))/10 SAMPLES")
+    if nearlyIdentical >= 2 { log("TRAINING VARIETY WARNING · \(gesture.displayName.uppercased())") }
   }
   func addMotionTrainingSample(_ frames: [[Double]], for gesture: GestureKind) {
     handMotionTemplates.append(.init(gesture: gesture, frames: frames))
@@ -302,17 +379,29 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     return handPoseTemplates.filter { $0.gesture == gesture }.count
   }
   var coreMLTrainingReady: Bool {
-    let staticSamples = Dictionary(grouping: handPoseTemplates.filter {
-      $0.gesture.category == .staticPose
-    }, by: \.gesture)
-    guard (staticSamples[.unknown]?.count ?? 0) >= 10 else { return false }
-    return staticSamples.filter { $0.key != .unknown && $0.value.count >= 10 }.count >= 2
+    coreMLReadiness.canBuild
+  }
+  var coreMLReadiness: CoreMLTrainingReadiness {
+    CoreMLTrainingReadiness.evaluate(handPoseTemplates)
+  }
+  func trainingPrompt(for gesture: GestureKind) -> String {
+    if gesture == .unknown {
+      return "Next rejection example: relaxed hand, partial curl, transition pose, or unrelated motion."
+    }
+    let prompts = [
+      "Move a little closer or farther from the camera.",
+      "Shift the hand toward a different part of the frame.",
+      "Use a small wrist rotation while keeping the gesture clear.",
+      "Try slightly different lighting or palm angle.",
+      "Vary finger spacing without changing the gesture.",
+    ]
+    return prompts[sampleCount(for: gesture) % prompts.count]
   }
   func log(_ text: String) {
     commandLog.insert("\(Date.now.formatted(date: .omitted, time: .standard))  \(text)", at: 0)
     commandLog = Array(commandLog.prefix(40))
   }
-  private struct Saved: Codable {
+  struct Saved: Codable, @unchecked Sendable {
     var schemaVersion: Int?
     var theme: JarboTheme
     var leftRole: HandRole
@@ -321,7 +410,49 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     var pointerSensitivity: Double?
     var handPoseTemplates: [HandPoseTemplate]?
     var handMotionTemplates: [HandMotionTemplate]?
+    var cameraEnabled: Bool?
     var notes: String
+
+    init(
+      schemaVersion: Int?, theme: JarboTheme, leftRole: HandRole, rightRole: HandRole,
+      bindings: [ActionBinding], pointerSensitivity: Double?,
+      handPoseTemplates: [HandPoseTemplate]?, handMotionTemplates: [HandMotionTemplate]?,
+      cameraEnabled: Bool?, notes: String
+    ) {
+      self.schemaVersion = schemaVersion
+      self.theme = theme
+      self.leftRole = leftRole
+      self.rightRole = rightRole
+      self.bindings = bindings
+      self.pointerSensitivity = pointerSensitivity
+      self.handPoseTemplates = handPoseTemplates
+      self.handMotionTemplates = handMotionTemplates
+      self.cameraEnabled = cameraEnabled
+      self.notes = notes
+    }
+
+    enum CodingKeys: String, CodingKey {
+      case schemaVersion, theme, leftRole, rightRole, bindings, pointerSensitivity
+      case handPoseTemplates, handMotionTemplates, cameraEnabled, notes
+    }
+
+    init(from decoder: Decoder) throws {
+      let values = try decoder.container(keyedBy: CodingKeys.self)
+      schemaVersion = try? values.decodeIfPresent(Int.self, forKey: .schemaVersion)
+      theme = (try? values.decodeIfPresent(JarboTheme.self, forKey: .theme)) ?? .arcReactor
+      leftRole = (try? values.decodeIfPresent(HandRole.self, forKey: .leftRole)) ?? .pointer
+      rightRole = (try? values.decodeIfPresent(HandRole.self, forKey: .rightRole)) ?? .controls
+      bindings = (try? values.decodeIfPresent([ActionBinding].self, forKey: .bindings))
+        ?? AppState.defaults
+      pointerSensitivity = try? values.decodeIfPresent(Double.self, forKey: .pointerSensitivity)
+      handPoseTemplates = try? values.decodeIfPresent(
+        [HandPoseTemplate].self, forKey: .handPoseTemplates)
+      handMotionTemplates = try? values.decodeIfPresent(
+        [HandMotionTemplate].self, forKey: .handMotionTemplates)
+      cameraEnabled = try? values.decodeIfPresent(Bool.self, forKey: .cameraEnabled)
+      notes = (try? values.decodeIfPresent(String.self, forKey: .notes))
+        ?? "Welcome back. Jarbo systems are online."
+    }
   }
   private var saveURL: URL {
     FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appending(
@@ -336,19 +467,25 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     log("LOADED \(priors.count) HAGRID LANDMARK PRIORS")
   }
   private func load() {
-    guard let data = try? Data(contentsOf: saveURL),
-      let s = try? JSONDecoder().decode(Saved.self, from: data)
-    else { return }
+    guard let data = try? Data(contentsOf: saveURL) else { return }
+    guard let s = try? JSONDecoder().decode(Saved.self, from: data) else {
+      let backup = saveURL.deletingLastPathComponent().appending(
+        path: "config-corrupt-\(Int(Date().timeIntervalSince1970)).json")
+      try? FileManager.default.copyItem(at: saveURL, to: backup)
+      log("SETTINGS RECOVERY · INVALID CONFIG BACKED UP")
+      return
+    }
     theme = s.theme
     leftRole = s.leftRole
     rightRole = s.rightRole
-    bindings = migrate(s.bindings, from: s.schemaVersion ?? 0)
+    bindings = Self.migrateBindings(s.bindings, from: s.schemaVersion ?? 0)
     pointerSensitivity = (s.schemaVersion ?? 0) < 4 ? 0.5 : (s.pointerSensitivity ?? 0.5)
     handPoseTemplates = s.handPoseTemplates ?? []
     handMotionTemplates = s.handMotionTemplates ?? []
+    cameraEnabled = s.cameraEnabled ?? false
     notes = s.notes
   }
-  private func migrate(_ saved: [ActionBinding], from schema: Int) -> [ActionBinding] {
+  static func migrateBindings(_ saved: [ActionBinding], from schema: Int) -> [ActionBinding] {
     var result = saved
     if schema < 4 {
       result.removeAll { $0.action == .spaceLeft || $0.action == .spaceRight }
@@ -382,15 +519,28 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
   func flushSave() {
     saveWorkItem?.cancel()
     saveWorkItem = nil
-    saveNow()
+    let snapshot = savedSnapshot
+    let url = saveURL
+    persistenceQueue.sync { Self.write(snapshot, to: url) }
   }
   private func saveNow() {
-    let s = Saved(
-      schemaVersion: 7, theme: theme, leftRole: leftRole, rightRole: rightRole,
+    JarboPerformance.settingsSnapshotQueued()
+    let snapshot = savedSnapshot
+    let url = saveURL
+    persistenceQueue.async { Self.write(snapshot, to: url) }
+  }
+  private var savedSnapshot: Saved {
+    Saved(
+      schemaVersion: 8, theme: theme, leftRole: leftRole, rightRole: rightRole,
       bindings: bindings, pointerSensitivity: pointerSensitivity,
-      handPoseTemplates: handPoseTemplates, handMotionTemplates: handMotionTemplates, notes: notes)
+      handPoseTemplates: handPoseTemplates, handMotionTemplates: handMotionTemplates,
+      cameraEnabled: cameraEnabled, notes: notes)
+  }
+  nonisolated private static func write(_ snapshot: Saved, to url: URL) {
     try? FileManager.default.createDirectory(
-      at: saveURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-    if let data = try? JSONEncoder().encode(s) { try? data.write(to: saveURL, options: .atomic) }
+      at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    if let data = try? JSONEncoder().encode(snapshot) {
+      try? data.write(to: url, options: .atomic)
+    }
   }
 }

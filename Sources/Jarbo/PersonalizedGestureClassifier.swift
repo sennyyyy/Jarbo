@@ -17,6 +17,10 @@ final class PersonalizedGestureClassifier: @unchecked Sendable {
 
   init() { loadSavedModel() }
 
+  var lastErrorMessage: String? {
+    try? String(contentsOf: errorURL, encoding: .utf8)
+  }
+
   var isAvailable: Bool {
     lock.lock()
     defer { lock.unlock() }
@@ -55,7 +59,8 @@ final class PersonalizedGestureClassifier: @unchecked Sendable {
         // Orientation samples intentionally retain wrist rotation and therefore use a
         // different feature space. The first personalized model handles static poses only.
         let candidates = samples.filter {
-          $0.features.count == self.featureCount && $0.gesture.category == .staticPose
+          $0.features.count == self.featureCount
+            && ($0.gesture == .unknown || $0.gesture.isCoreMLEligible)
         }
         let grouped = Dictionary(grouping: candidates, by: \.gesture)
         let completedLabels = Set(grouped.compactMap { $0.value.count >= 10 ? $0.key : nil })
@@ -77,23 +82,46 @@ final class PersonalizedGestureClassifier: @unchecked Sendable {
 
         let directory = self.modelDirectory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let sourceURL = directory.appending(path: "PersonalGestureClassifier.mlmodel")
-        if FileManager.default.fileExists(atPath: sourceURL.path) {
-          try FileManager.default.removeItem(at: sourceURL)
+        let stagedSource = directory.appending(
+          path: "PersonalGestureClassifier-\(UUID().uuidString).mlmodel")
+        let stagedCompiled = directory.appending(
+          path: "PersonalGestureClassifier-\(UUID().uuidString).mlmodelc",
+          directoryHint: .isDirectory)
+        let stagedMetadata = directory.appending(
+          path: "PersonalGestureClassifier-\(UUID().uuidString).json")
+        var temporaryURLs = [stagedSource, stagedCompiled, stagedMetadata]
+        defer {
+          for url in temporaryURLs where FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.removeItem(at: url)
+          }
         }
-        try classifier.write(to: sourceURL, metadata: nil)
-        let compiled = try MLModel.compileModel(at: sourceURL)
-        let destination = self.compiledModelURL
-        if FileManager.default.fileExists(atPath: destination.path) {
-          try FileManager.default.removeItem(at: destination)
-        }
-        try FileManager.default.copyItem(at: compiled, to: destination)
-        let loaded = try MLModel(contentsOf: destination, configuration: Self.configuration)
+
+        try classifier.write(to: stagedSource, metadata: nil)
+        let compiled = try MLModel.compileModel(at: stagedSource)
+        temporaryURLs.append(compiled)
+        try FileManager.default.copyItem(at: compiled, to: stagedCompiled)
+        _ = try MLModel(contentsOf: stagedCompiled, configuration: Self.makeConfiguration())
+        let metadata = ModelMetadata(
+          featureVersion: 1, createdAt: Date(), classes: labels.map(\.rawValue).sorted(),
+          sampleCount: usable.count,
+          backends: Set(usable.compactMap { $0.backend?.rawValue }).sorted())
+        try JSONEncoder().encode(metadata).write(to: stagedMetadata, options: .atomic)
+
+        // Validate every new artifact before replacing the currently working model. Each
+        // replacement is atomic on the application-support volume, and the compiled model—the
+        // runtime-critical artifact—is committed last.
+        try self.replaceItem(at: self.sourceModelURL, with: stagedSource)
+        try self.replaceItem(at: self.metadataURL, with: stagedMetadata)
+        try self.replaceItem(at: self.compiledModelURL, with: stagedCompiled)
+        let loaded = try MLModel(
+          contentsOf: self.compiledModelURL, configuration: Self.makeConfiguration())
+        try? FileManager.default.removeItem(at: errorURL)
         self.lock.lock()
         self.model = loaded
         self.lock.unlock()
         completion(.success(usable.count))
       } catch {
+        try? error.localizedDescription.write(to: self.errorURL, atomically: true, encoding: .utf8)
         completion(.failure(error))
       }
     }
@@ -101,9 +129,21 @@ final class PersonalizedGestureClassifier: @unchecked Sendable {
 
   private func loadSavedModel() {
     guard FileManager.default.fileExists(atPath: compiledModelURL.path),
-      let loaded = try? MLModel(contentsOf: compiledModelURL, configuration: Self.configuration)
+      let loaded = try? MLModel(
+        contentsOf: compiledModelURL, configuration: Self.makeConfiguration())
     else { return }
     model = loaded
+  }
+
+  func deleteModel() throws {
+    for url in [sourceModelURL, compiledModelURL, metadataURL, errorURL] where
+      FileManager.default.fileExists(atPath: url.path)
+    {
+      try FileManager.default.removeItem(at: url)
+    }
+    lock.lock()
+    model = nil
+    lock.unlock()
   }
 
   private var modelDirectory: URL {
@@ -115,11 +155,26 @@ final class PersonalizedGestureClassifier: @unchecked Sendable {
     modelDirectory.appending(path: "PersonalGestureClassifier.mlmodelc", directoryHint: .isDirectory)
   }
 
-  private static let configuration: MLModelConfiguration = {
+  private var sourceModelURL: URL {
+    modelDirectory.appending(path: "PersonalGestureClassifier.mlmodel")
+  }
+
+  private var metadataURL: URL { modelDirectory.appending(path: "PersonalGestureClassifier.json") }
+  private var errorURL: URL { modelDirectory.appending(path: "PersonalGestureClassifier.error.txt") }
+
+  private static func makeConfiguration() -> MLModelConfiguration {
     let configuration = MLModelConfiguration()
     configuration.computeUnits = .all
     return configuration
-  }()
+  }
+
+  private func replaceItem(at destination: URL, with staged: URL) throws {
+    if FileManager.default.fileExists(atPath: destination.path) {
+      _ = try FileManager.default.replaceItemAt(destination, withItemAt: staged)
+    } else {
+      try FileManager.default.moveItem(at: staged, to: destination)
+    }
+  }
 
   private static func featureName(_ index: Int) -> String { "landmark_\(index)" }
 
@@ -141,5 +196,13 @@ final class PersonalizedGestureClassifier: @unchecked Sendable {
         "Every included gesture needs ten samples before building the Core ML model."
       }
     }
+  }
+
+  private struct ModelMetadata: Codable {
+    var featureVersion: Int
+    var createdAt: Date
+    var classes: [String]
+    var sampleCount: Int
+    var backends: [String]
   }
 }

@@ -1,12 +1,77 @@
 import AVFoundation
 import CoreGraphics
 
+enum CameraRunState: Equatable {
+  case off
+  case starting
+  case on
+  case stopping
+  case permissionDenied
+  case unavailable
+
+  var label: String {
+    switch self {
+    case .off: "Camera Off"
+    case .starting: "Camera Starting…"
+    case .on: "Camera On"
+    case .stopping: "Camera Stopping…"
+    case .permissionDenied: "Camera Permission Required"
+    case .unavailable: "Camera Unavailable"
+    }
+  }
+}
+
+enum TrainingCaptureFailure: LocalizedError, Equatable {
+  case cameraOff
+  case handNotFound(HandSide)
+  case incomplete(found: Int)
+  case stale
+  case lowQuality
+  case busy
+
+  var errorDescription: String? {
+    switch self {
+    case .cameraOff: "Turn the camera on before capturing a pose."
+    case .handNotFound(let side): "Show your full \(side.rawValue.lowercased()) hand to the camera."
+    case .incomplete(let found): "Only \(found)/21 fresh landmarks are ready. Keep every finger visible."
+    case .stale: "The landmark snapshot is stale. Hold the pose steady and try again."
+    case .lowQuality: "Landmark confidence is too low. Improve lighting or move the hand into view."
+    case .busy: "The detector is busy. Hold the pose and try once more."
+    }
+  }
+}
+
+private final class TrainingCaptureBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value: Result<HandPoseTemplate, TrainingCaptureFailure>?
+  func set(_ newValue: Result<HandPoseTemplate, TrainingCaptureFailure>) {
+    lock.lock(); value = newValue; lock.unlock()
+  }
+  func get() -> Result<HandPoseTemplate, TrainingCaptureFailure>? {
+    lock.lock(); defer { lock.unlock() }; return value
+  }
+}
+
+private final class MotionCaptureBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value: [[Double]]?
+  func set(_ newValue: [[Double]]?) {
+    lock.lock(); value = newValue; lock.unlock()
+  }
+  func get() -> [[Double]]? {
+    lock.lock(); defer { lock.unlock() }; return value
+  }
+}
+
 final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable,
   AVCaptureVideoDataOutputSampleBufferDelegate
 {
   let session = AVCaptureSession()
   @Published var hands: [TrackedHand] = []
-  @Published var running = false
+  @Published private(set) var running = false
+  @Published private(set) var cameraState = CameraRunState.off
+  @Published private(set) var controlsEnabled = true
+  @Published private(set) var controlsStatus = "CONTROLS READY · CAMERA OFF"
   @Published var personalizedModelStatus = "CORE ML NOT TRAINED"
   @Published var trainingCaptureStatus = "SHOW THE SELECTED HAND · WAITING FOR 21 JOINTS"
   var roleProvider: (() -> (HandRole, HandRole))?
@@ -18,11 +83,19 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
   var automation: AutomationService?
   private let detector: HandLandmarkDetector = AppleVisionHandDetector()
   private let queue = DispatchQueue(label: "jarbo.vision", qos: .userInteractive)
+  private let lifecycleLock = NSLock()
+  private var startRequested = false
+  private var wantsCamera = false
+  private var cameraReadyForActions = false
+  private var wantsControls = true
+  private var wantsConfigurationMode = false
   private var smooth: [HandSide: [HandJoint: CGPoint]] = [:]
   private var latestStablePoints: [HandSide: [HandJoint: CGPoint]] = [:]
   private var latestBackend: [HandSide: HandDetectorBackend] = [:]
   private var lastSeenAt: [HandSide: Date] = [:]
   private var jointSeenAt: [HandSide: [HandJoint: Date]] = [:]
+  private var jointConfidence: [HandSide: [HandJoint: Float]] = [:]
+  private var trainingStatusHoldUntil = Date.distantPast
   private var lastPublishedAt = Date.distantPast
   private var lastTrainingStatusAt = Date.distantPast
   private var configurationMode = false
@@ -37,49 +110,123 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
   private var activeBindings: [HandSide: [ActionBinding]] = [:]
   private var missingFrames: [HandSide: Int] = [:]
   private var motionTrainingHistory: [HandSide: [(Date, [Double])]] = [:]
+  private var sessionObservers: [NSObjectProtocol] = []
   private let fingertipJoints: Set<HandJoint> = [
     .thumbTip, .indexTip, .middleTip, .ringTip, .littleTip,
   ]
-  func start() {
-    guard !running else { return }
+  override init() {
+    super.init()
+    let center = NotificationCenter.default
+    for name in [
+      AVCaptureSession.wasInterruptedNotification,
+      AVCaptureSession.runtimeErrorNotification,
+      AVCaptureSession.didStopRunningNotification,
+    ] {
+      sessionObservers.append(
+        center.addObserver(forName: name, object: session, queue: nil) { [weak self] _ in
+          self?.handleUnexpectedSessionStop()
+        })
+    }
+    sessionObservers.append(
+      center.addObserver(
+        forName: AVCaptureSession.interruptionEndedNotification, object: session, queue: nil
+      ) { [weak self] _ in
+        self?.restartAfterInterruptionIfNeeded()
+      })
+  }
+  deinit {
+    for observer in sessionObservers { NotificationCenter.default.removeObserver(observer) }
+  }
+  @MainActor func start() {
+    lifecycleLock.lock()
+    wantsCamera = true
+    guard !startRequested else {
+      lifecycleLock.unlock()
+      return
+    }
+    startRequested = true
+    lifecycleLock.unlock()
+    cameraState = .starting
+    trainingCaptureStatus = "CAMERA STARTING…"
+    refreshControlsStatus()
     switch AVCaptureDevice.authorizationStatus(for: .video) {
     case .authorized: configure()
     case .notDetermined:
-      AVCaptureDevice.requestAccess(for: .video) { [weak self] ok in if ok { self?.configure() } }
-    default: return
+      AVCaptureDevice.requestAccess(for: .video) { [weak self] ok in
+        if ok { self?.configure() } else { self?.finishCameraStart(.permissionDenied) }
+      }
+    case .denied, .restricted: finishCameraStart(.permissionDenied)
+    @unknown default: finishCameraStart(.unavailable)
     }
   }
-  func stop() {
+  @MainActor func stop() {
+    lifecycleLock.lock()
+    wantsCamera = false
+    cameraReadyForActions = false
+    startRequested = false
+    lifecycleLock.unlock()
+    // Release synthetic input before AVCapture is allowed to block while stopping.
+    // Any already queued frame also re-checks actionDispatchIsAllowed on the main actor.
+    releaseAllControls()
+    hands = []
+    cameraState = .stopping
+    trainingCaptureStatus = "CAMERA STOPPING…"
+    refreshControlsStatus()
     queue.async { [weak self] in
       guard let self else { return }
+      for output in session.outputs.compactMap({ $0 as? AVCaptureVideoDataOutput }) {
+        output.setSampleBufferDelegate(nil, queue: nil)
+      }
       session.stopRunning()
-      smooth.removeAll()
-      latestStablePoints.removeAll()
-      lastSeenAt.removeAll()
-      jointSeenAt.removeAll()
+      session.beginConfiguration()
+      for input in session.inputs { session.removeInput(input) }
+      for output in session.outputs { session.removeOutput(output) }
+      session.commitConfiguration()
+      clearTrackingState()
+      let stoppedIsStillWanted = cameraIsWanted
       DispatchQueue.main.async {
-        self.releaseControls(for: .left)
-        self.releaseControls(for: .right)
+        guard !stoppedIsStillWanted else { return }
         self.running = false
+        self.cameraState = .off
         self.hands = []
         self.trainingCaptureStatus = "CAMERA PAUSED"
+        self.refreshControlsStatus()
       }
     }
   }
-  func setConfigurationMode(_ enabled: Bool) {
+  @MainActor func setControlsEnabled(_ enabled: Bool) {
+    lifecycleLock.lock()
+    wantsControls = enabled
+    lifecycleLock.unlock()
+    controlsEnabled = enabled
+    // Clear recognition state on either edge so resuming never dispatches a stale pose.
+    queue.async { [weak self] in self?.clearTemporalRecognitionState() }
+    if !enabled { releaseAllControls() }
+    refreshControlsStatus()
+  }
+  @MainActor func setConfigurationMode(_ enabled: Bool) {
+    lifecycleLock.lock()
+    wantsConfigurationMode = enabled
+    lifecycleLock.unlock()
+    if enabled { releaseAllControls() }
+    refreshControlsStatus()
     queue.async { [weak self] in
-      self?.configurationMode = enabled
-      guard enabled, let self else { return }
-      DispatchQueue.main.async {
-        self.releaseControls(for: .left)
-        self.releaseControls(for: .right)
-        self.automation?.deactivatePointer()
-      }
+      guard let self else { return }
+      configurationMode = enabled
+      clearTemporalRecognitionState()
     }
   }
   private func configure() {
     queue.async { [weak self] in
       guard let self else { return }
+      guard cameraIsWanted else {
+        finishCameraStart(.off)
+        return
+      }
+      if session.isRunning {
+        finishCameraStart(.on)
+        return
+      }
       session.beginConfiguration()
       if session.canSetSessionPreset(.hd1280x720) {
         session.sessionPreset = .hd1280x720
@@ -92,6 +239,7 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
         let input = try? AVCaptureDeviceInput(device: camera)
       else {
         session.commitConfiguration()
+        finishCameraStart(.unavailable)
         return
       }
       do {
@@ -106,11 +254,18 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
         camera.unlockForConfiguration()
       } catch {}
       if session.inputs.isEmpty, session.canAddInput(input) { session.addInput(input) }
-      let output = AVCaptureVideoDataOutput()
-      output.alwaysDiscardsLateVideoFrames = true
-      output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+      let output: AVCaptureVideoDataOutput
+      if let existing = session.outputs.compactMap({ $0 as? AVCaptureVideoDataOutput }).first {
+        output = existing
+      } else {
+        output = AVCaptureVideoDataOutput()
+        output.alwaysDiscardsLateVideoFrames = true
+        output.videoSettings = [
+          kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+        ]
+        if session.canAddOutput(output) { session.addOutput(output) }
+      }
       output.setSampleBufferDelegate(self, queue: queue)
-      if session.outputs.isEmpty, session.canAddOutput(output) { session.addOutput(output) }
       if let connection = output.connection(with: .video) {
         if connection.isVideoMirroringSupported {
           connection.automaticallyAdjustsVideoMirroring = false
@@ -119,22 +274,134 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
         if connection.isVideoRotationAngleSupported(0) { connection.videoRotationAngle = 0 }
       }
       session.commitConfiguration()
-      guard !session.inputs.isEmpty, !session.outputs.isEmpty else { return }
+      guard !session.inputs.isEmpty, !session.outputs.isEmpty else {
+        finishCameraStart(.unavailable)
+        return
+      }
       session.startRunning()
-      DispatchQueue.main.async { self.running = self.session.isRunning }
+      finishCameraStart(session.isRunning ? .on : .unavailable)
     }
+  }
+  private func finishCameraStart(_ state: CameraRunState) {
+    lifecycleLock.lock()
+    let wanted = wantsCamera
+    cameraReadyForActions = state == .on && wanted
+    if state != .on || !wanted {
+      startRequested = false
+    }
+    lifecycleLock.unlock()
+    let resolvedState: CameraRunState = state == .on && !wanted ? .off : state
+    DispatchQueue.main.async {
+      self.running = resolvedState == .on
+      self.cameraState = resolvedState
+      switch resolvedState {
+      case .on: self.trainingCaptureStatus = "CAMERA LIVE · SHOW THE SELECTED HAND"
+      case .permissionDenied:
+        self.trainingCaptureStatus = "CAMERA PERMISSION REQUIRED"
+        self.releaseAllControls()
+      case .unavailable:
+        self.trainingCaptureStatus = "NO CAMERA AVAILABLE"
+        self.releaseAllControls()
+      default: break
+      }
+      self.refreshControlsStatus()
+    }
+  }
+  private var cameraIsWanted: Bool {
+    lifecycleLock.lock()
+    defer { lifecycleLock.unlock() }
+    return wantsCamera
+  }
+  private var cameraFramesAreAllowed: Bool {
+    lifecycleLock.lock()
+    defer { lifecycleLock.unlock() }
+    return wantsCamera && cameraReadyForActions
+  }
+  private var actionDispatchIsAllowed: Bool {
+    lifecycleLock.lock()
+    defer { lifecycleLock.unlock() }
+    return wantsCamera && cameraReadyForActions && wantsControls && !wantsConfigurationMode
+  }
+  private var configurationIsWanted: Bool {
+    lifecycleLock.lock()
+    defer { lifecycleLock.unlock() }
+    return wantsConfigurationMode
+  }
+  private func handleUnexpectedSessionStop() {
+    lifecycleLock.lock()
+    guard wantsCamera, cameraReadyForActions else {
+      lifecycleLock.unlock()
+      return
+    }
+    cameraReadyForActions = false
+    startRequested = false
+    lifecycleLock.unlock()
+    let permissionDenied = AVCaptureDevice.authorizationStatus(for: .video) != .authorized
+    DispatchQueue.main.async {
+      self.releaseAllControls()
+      self.running = false
+      self.hands = []
+      self.cameraState = permissionDenied ? .permissionDenied : .unavailable
+      self.trainingCaptureStatus =
+        permissionDenied ? "CAMERA PERMISSION REQUIRED" : "CAMERA INTERRUPTED · RETRY AVAILABLE"
+      self.automation?.state?.log(
+        permissionDenied ? "CAMERA PERMISSION REVOKED · CONTROLS RELEASED" : "CAMERA INTERRUPTED · CONTROLS RELEASED")
+      self.refreshControlsStatus()
+    }
+  }
+  private func restartAfterInterruptionIfNeeded() {
+    guard cameraIsWanted else { return }
+    DispatchQueue.main.async { self.start() }
+  }
+  @MainActor private func refreshControlsStatus() {
+    if !controlsEnabled {
+      controlsStatus = "CONTROLS PAUSED"
+    } else if configurationIsWanted {
+      controlsStatus = "CONTROLS PAUSED · CONFIGURATION"
+    } else if cameraState == .on {
+      controlsStatus = "CONTROLS ACTIVE"
+    } else {
+      controlsStatus = "CONTROLS READY · CAMERA OFF"
+    }
+  }
+  @MainActor private func releaseAllControls() {
+    releaseControls(for: .left)
+    releaseControls(for: .right)
+    missingFrames.removeAll()
+    automation?.releaseAllMouseButtons()
+    automation?.deactivatePointer()
+  }
+  private func clearTemporalRecognitionState() {
+    history.removeAll()
+    activePinch.removeAll()
+    pinchCandidate.removeAll()
+    lastSwipe.removeAll()
+    motionTrainingHistory.removeAll()
+    lastPersonalPrediction.removeAll()
+  }
+  private func clearTrackingState() {
+    smooth.removeAll()
+    latestStablePoints.removeAll()
+    latestBackend.removeAll()
+    lastSeenAt.removeAll()
+    jointSeenAt.removeAll()
+    jointConfidence.removeAll()
+    clearTemporalRecognitionState()
   }
   func captureOutput(
     _ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
     from connection: AVCaptureConnection
   ) {
     autoreleasepool {
+      guard cameraFramesAreAllowed else { return }
       guard let pixel = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
       guard let frames = try? detector.detect(in: pixel) else { return }
+      guard cameraFramesAreAllowed else { return }
       process(frames)
     }
   }
   private func process(_ observations: [HandLandmarkFrame]) {
+    guard cameraFramesAreAllowed else { return }
     var tracked: [TrackedHand] = []
     var candidates = observations
     if candidates.count == 2, candidates[0].side == candidates[1].side {
@@ -149,6 +416,7 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
       // This prevents pose capture from failing because of a single missing DIP/MCP point.
       var points = smooth[side] ?? [:]
       var jointTimes = jointSeenAt[side] ?? [:]
+      var confidences = jointConfidence[side] ?? [:]
       for (joint, p) in recognized where p.confidence > 0.15 {
         // The preview is explicitly mirrored like a selfie. Vision reads the unmirrored,
         // landscape pixel buffer, so mirror only X when converting into preview coordinates.
@@ -160,12 +428,14 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
         points[joint] = CGPoint(
           x: old.x + (raw.x - old.x) * alpha, y: old.y + (raw.y - old.y) * alpha)
         jointTimes[joint] = candidate.timestamp
+        confidences[joint] = p.confidence
       }
       points = points.filter {
         candidate.timestamp.timeIntervalSince(jointTimes[$0.key] ?? .distantPast) < 0.35
       }
       smooth[side] = points
       jointSeenAt[side] = jointTimes
+      jointConfidence[side] = confidences
       latestStablePoints[side] = points
       latestBackend[side] = candidate.backend
       lastSeenAt[side] = candidate.timestamp
@@ -177,7 +447,9 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
         .init(
           id: side, points: points, gesture: gesture, confidence: candidate.confidence,
           backend: candidate.backend))
-      if !configurationMode { dispatch(side: side, gesture: gesture, points: points) }
+      if !configurationMode && actionDispatchIsAllowed {
+        dispatch(side: side, gesture: gesture, points: points)
+      }
     }
     let seen = Set(tracked.map(\.id))
     let now = Date()
@@ -187,6 +459,7 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
         latestStablePoints.removeValue(forKey: side)
         latestBackend.removeValue(forKey: side)
         jointSeenAt.removeValue(forKey: side)
+        jointConfidence.removeValue(forKey: side)
       }
     }
     let shouldPublish = !configurationMode && now.timeIntervalSince(lastPublishedAt) >= (1.0 / 12.0)
@@ -196,12 +469,15 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
     if shouldPublishTrainingStatus { lastTrainingStatusAt = now }
     let readiness = tracked.map { "\($0.id.rawValue.uppercased()) \($0.points.count)/21" }
       .joined(separator: " · ")
+    let canPublishTrainingStatus = now >= trainingStatusHoldUntil
     DispatchQueue.main.async {
+      guard self.cameraFramesAreAllowed else { return }
       if shouldPublish { self.hands = tracked }
-      if shouldPublish || shouldPublishTrainingStatus {
-        self.trainingCaptureStatus = readiness.isEmpty
+      if (shouldPublish || shouldPublishTrainingStatus) && canPublishTrainingStatus {
+        let newStatus = readiness.isEmpty
           ? "SHOW THE SELECTED HAND · WAITING FOR 21 JOINTS"
           : "LANDMARKS · \(readiness)"
+        if self.trainingCaptureStatus != newStatus { self.trainingCaptureStatus = newStatus }
       }
       for side in HandSide.allCases {
         if seen.contains(side) {
@@ -386,7 +662,12 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
   private func dispatch(
     side: HandSide, gesture: GestureKind, points: [HandJoint: CGPoint]
   ) {
+    guard actionDispatchIsAllowed else { return }
     DispatchQueue.main.async {
+      guard self.actionDispatchIsAllowed else {
+        self.releaseControls(for: side)
+        return
+      }
       let roles = self.roleProvider?()
       let role = side == .left ? roles?.0 : roles?.1
       if role == .pointer,
@@ -431,40 +712,114 @@ final class HandTrackingService: NSObject, ObservableObject, @unchecked Sendable
     guard let points = hands.first(where: { $0.id == side })?.points else { return nil }
     return Self.poseFeatures(points, preserveOrientation: gesture.category == .orientation)
   }
-  func captureTrainingSample(for gesture: GestureKind, hand side: HandSide) -> HandPoseTemplate? {
-    let result: HandPoseTemplate? = queue.sync {
-      guard Date().timeIntervalSince(lastSeenAt[side] ?? .distantPast) < 0.35,
-        let points = latestStablePoints[side], points.count == HandJoint.allCases.count,
-        let features = Self.poseFeatures(
-          points, preserveOrientation: gesture.category == .orientation)
-      else { return nil }
-      return .init(
+  func captureTrainingSample(
+    for gesture: GestureKind, hand side: HandSide
+  ) -> Result<HandPoseTemplate, TrainingCaptureFailure> {
+    guard cameraState == .on else { return finishCapture(.failure(.cameraOff), gesture: gesture) }
+    let box = TrainingCaptureBox()
+    let semaphore = DispatchSemaphore(value: 0)
+    queue.async { [weak self] in
+      guard let self else { box.set(.failure(.busy)); semaphore.signal(); return }
+      let now = Date()
+      guard let lastSeen = lastSeenAt[side] else {
+        box.set(.failure(.handNotFound(side))); semaphore.signal(); return
+      }
+      guard now.timeIntervalSince(lastSeen) < 0.25 else {
+        box.set(.failure(.stale)); semaphore.signal(); return
+      }
+      let points = latestStablePoints[side] ?? [:]
+      let times = jointSeenAt[side] ?? [:]
+      let freshCount = HandJoint.allCases.filter {
+        guard let seen = times[$0] else { return false }
+        return now.timeIntervalSince(seen) < 0.25 && points[$0] != nil
+      }.count
+      guard freshCount == HandJoint.allCases.count else {
+        box.set(.failure(.incomplete(found: freshCount))); semaphore.signal(); return
+      }
+      let confidences = jointConfidence[side] ?? [:]
+      let average = HandJoint.allCases.reduce(0.0) { $0 + Double(confidences[$1] ?? 0) }
+        / Double(HandJoint.allCases.count)
+      guard average >= 0.28 else {
+        box.set(.failure(.lowQuality)); semaphore.signal(); return
+      }
+      guard let features = Self.poseFeatures(
+        points, preserveOrientation: gesture.category == .orientation)
+      else {
+        box.set(.failure(.incomplete(found: freshCount))); semaphore.signal(); return
+      }
+      trainingStatusHoldUntil = now.addingTimeInterval(2.0)
+      box.set(.success(.init(
         gesture: gesture, features: features, backend: latestBackend[side], hand: side,
-        capturedAt: Date())
+        capturedAt: now)))
+      semaphore.signal()
     }
-    trainingCaptureStatus = result == nil
-      ? "CAPTURE FAILED · KEEP THE FULL \(side.rawValue.uppercased()) HAND VISIBLE"
-      : "SAVED \(gesture.displayName.uppercased()) · 21/21 JOINTS"
+    // Keep the synchronous UI hand-off below the Phase 0 80 ms interaction gate.
+    guard semaphore.wait(timeout: .now() + 0.075) == .success, let result = box.get() else {
+      return finishCapture(.failure(.busy), gesture: gesture)
+    }
+    return finishCapture(result, gesture: gesture)
+  }
+  private func finishCapture(
+    _ result: Result<HandPoseTemplate, TrainingCaptureFailure>, gesture: GestureKind
+  ) -> Result<HandPoseTemplate, TrainingCaptureFailure> {
+    queue.async { [weak self] in self?.trainingStatusHoldUntil = Date().addingTimeInterval(2.0) }
+    switch result {
+    case .success:
+      trainingCaptureStatus = "SAVED \(gesture.displayName.uppercased()) · 21/21 FRESH JOINTS"
+    case .failure(let failure):
+      trainingCaptureStatus = "CAPTURE FAILED · \(failure.localizedDescription.uppercased())"
+    }
     return result
   }
   func captureRecentMotion(hand side: HandSide) -> [[Double]]? {
-    queue.sync { Self.normalizedMotion(motionTrainingHistory[side] ?? []) }
+    let box = MotionCaptureBox()
+    let semaphore = DispatchSemaphore(value: 0)
+    queue.async { [weak self] in
+      box.set(Self.normalizedMotion(self?.motionTrainingHistory[side] ?? []))
+      semaphore.signal()
+    }
+    guard semaphore.wait(timeout: .now() + 0.075) == .success else { return nil }
+    return box.get()
   }
-  func trainPersonalizedModel(samples: [HandPoseTemplate]) {
+  @MainActor func trainPersonalizedModel(samples: [HandPoseTemplate]) {
     guard let personalizedClassifier else {
       personalizedModelStatus = "CORE ML UNAVAILABLE"
       return
     }
     personalizedModelStatus = "TRAINING CORE ML…"
+    let readiness = CoreMLTrainingReadiness.evaluate(samples)
+    automation?.state?.log("CORE ML BUILD STARTED · \(samples.count) PERSONAL SAMPLES")
+    automation?.state?.log("CORE ML READINESS · NO GESTURE \(readiness.noGestureCount)/10")
+    for row in readiness.classes where row.count > 0 {
+      automation?.state?.log(
+        "CORE ML READINESS · \(row.gesture.displayName.uppercased()) \(row.count)/10")
+    }
     personalizedClassifier.train(samples: samples) { [weak self] result in
       DispatchQueue.main.async {
         switch result {
         case .success(let count):
           self?.personalizedModelStatus = "CORE ML READY · \(count) SAMPLES"
+          self?.automation?.state?.log("CORE ML BUILD READY · \(count) SAMPLES")
         case .failure(let error):
-          self?.personalizedModelStatus = "TRAINING FAILED · \(error.localizedDescription.uppercased())"
+          let previousModelActive = self?.personalizedClassifier?.isAvailable == true
+          let retention = previousModelActive ? "PREVIOUS MODEL ACTIVE" : "NO MODEL ACTIVE"
+          self?.personalizedModelStatus =
+            "TRAINING FAILED · \(retention) · \(error.localizedDescription.uppercased())"
+          self?.automation?.state?.log(
+            "CORE ML BUILD FAILED · \(retention) · \(error.localizedDescription)")
         }
       }
+    }
+  }
+  @MainActor func deletePersonalizedModel() {
+    guard let personalizedClassifier else { return }
+    do {
+      try personalizedClassifier.deleteModel()
+      personalizedModelStatus = "CORE ML NOT TRAINED · SAMPLES PRESERVED"
+      automation?.state?.log("PERSONALIZED CORE ML MODEL DELETED · SAMPLES PRESERVED")
+    } catch {
+      personalizedModelStatus = "DELETE FAILED · \(error.localizedDescription.uppercased())"
+      automation?.state?.log("CORE ML DELETE FAILED · \(error.localizedDescription)")
     }
   }
   private func closestTemplate(

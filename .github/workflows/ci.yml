@@ -1,0 +1,14 @@
+name: Verify Jarbo
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tests and app bundle
+        run: ./verify.sh

@@ -25,7 +25,13 @@ import Foundation
     }
   }
   func execute(_ binding: ActionBinding, at point: CGPoint? = nil) {
-    guard binding.enabled, Date().timeIntervalSince(lastRun[binding.id] ?? .distantPast) > 0.65
+    guard binding.enabled else { return }
+    if let error = binding.validationError {
+      lastOutput = "ACTION BLOCKED · \(error.uppercased())"
+      state?.log("ACTION BLOCKED · \(binding.name) · \(error)")
+      return
+    }
+    guard Date().timeIntervalSince(lastRun[binding.id] ?? .distantPast) > 0.65
     else { return }
     lastRun[binding.id] = Date()
     state?.log("\(binding.hand.rawValue) · \(binding.name)")
@@ -44,23 +50,42 @@ import Foundation
     case .playPause: mediaKey(16)
     case .nextTrack: mediaKey(17)
     case .previousTrack: mediaKey(18)
-    case .openURL: if let url = URL(string: binding.value) { NSWorkspace.shared.open(url) }
+    case .openURL:
+      if let url = URL(string: binding.value), NSWorkspace.shared.open(url) {
+        report("OPENED URL · \(url.host ?? url.absoluteString)")
+      } else {
+        reportFailure(binding, reason: "macOS could not open the URL")
+      }
     case .openApp: openApplication(binding.value)
     case .openFile:
-      NSWorkspace.shared.open(
-        URL(fileURLWithPath: NSString(string: binding.value).expandingTildeInPath))
+      let fileURL = URL(
+        fileURLWithPath: NSString(string: binding.value).expandingTildeInPath)
+      if FileManager.default.fileExists(atPath: fileURL.path), NSWorkspace.shared.open(fileURL) {
+        report("OPENED FILE · \(fileURL.lastPathComponent)")
+      } else {
+        reportFailure(binding, reason: "file not found or could not be opened")
+      }
     case .webSearch:
       if let q = binding.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
         let u = URL(string: "https://www.google.com/search?q=\(q)")
       {
-        NSWorkspace.shared.open(u)
+        if NSWorkspace.shared.open(u) {
+          report("WEB SEARCH OPENED")
+        } else {
+          reportFailure(binding, reason: "macOS could not open the browser")
+        }
       }
     case .shell: runShell(binding.value)
     case .speak:
       let p = Process()
       p.executableURL = URL(fileURLWithPath: "/usr/bin/say")
       p.arguments = [binding.value]
-      try? p.run()
+      do {
+        try p.run()
+        report("SPEECH STARTED")
+      } catch {
+        reportFailure(binding, reason: error.localizedDescription)
+      }
     case .toggleHUD: NotificationCenter.default.post(name: .jarboToggleHUD, object: nil)
     case .note: state?.notes = binding.value
     case .generateImage:
@@ -69,6 +94,11 @@ import Foundation
   }
   func begin(_ binding: ActionBinding, at point: CGPoint? = nil) {
     guard binding.enabled else { return }
+    if let error = binding.validationError {
+      lastOutput = "ACTION BLOCKED · \(error.uppercased())"
+      state?.log("ACTION BLOCKED · \(binding.name) · \(error)")
+      return
+    }
     state?.log("\(binding.hand.rawValue) · \(binding.name)")
     switch binding.action {
     case .leftClick: mouseDown(.left, at: point)
@@ -151,8 +181,7 @@ import Foundation
   }
   func requestAccessibility() {
     _ = CGRequestPostEventAccess()
-    let options =
-      [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+    let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
     _ = AXIsProcessTrustedWithOptions(options)
     if let url = URL(
       string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
@@ -162,7 +191,16 @@ import Foundation
     refreshAccessibility()
   }
   func refreshAccessibility() {
-    accessibilityGranted = AXIsProcessTrusted() && CGPreflightPostEventAccess()
+    let granted = AXIsProcessTrusted() && CGPreflightPostEventAccess()
+    guard accessibilityGranted != granted else { return }
+    let wasGranted = accessibilityGranted
+    accessibilityGranted = granted
+    if wasGranted && !granted {
+      releaseAllMouseButtons()
+      deactivatePointer()
+      lastOutput = "ACCESSIBILITY REVOKED · CONTROLS RELEASED"
+      state?.log("ACCESSIBILITY REVOKED · CONTROLS RELEASED")
+    }
   }
   private func ensureAccessibility(for action: String) -> Bool {
     refreshAccessibility()
@@ -244,27 +282,9 @@ import Foundation
   }
   private func shortcut(_ code: CGKeyCode, modifier: CGKeyCode, label: String) {
     guard ensureAccessibility(for: label) else { return }
-    lastOutput = "\(label) REQUESTED · SYSTEM EVENTS"
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-    process.arguments = [
-      "-e", "tell application \"System Events\" to key code \(code) using {control down}",
-    ]
-    process.terminationHandler = { [weak self] completed in
-      Task { @MainActor in
-        guard let self else { return }
-        if completed.terminationStatus == 0 {
-          self.lastOutput = "\(label) CONFIRMED · SYSTEM EVENTS"
-        } else {
-          self.postShortcut(code, modifier: modifier, label: label)
-        }
-      }
-    }
-    do {
-      try process.run()
-    } catch {
-      postShortcut(code, modifier: modifier, label: label)
-    }
+    // A direct HID event needs only Jarbo's Accessibility permission and avoids an additional
+    // System Events Automation grant. It follows the standard macOS Control-arrow shortcuts.
+    postShortcut(code, modifier: modifier, label: label)
   }
   private func postShortcut(_ code: CGKeyCode, modifier: CGKeyCode, label: String) {
     let source = CGEventSource(stateID: .hidSystemState)
@@ -299,7 +319,24 @@ import Foundation
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
     p.arguments = ["-e", script]
-    try? p.run()
+    p.terminationHandler = { [weak self] process in
+      let status = process.terminationStatus
+      Task { @MainActor [weak self, status] in
+        guard let self else { return }
+        if status == 0 {
+          self.report("MEDIA CONTROL SENT")
+        } else {
+          self.lastOutput = "MEDIA CONTROL FAILED · CHECK SPOTIFY/AUTOMATION PERMISSION"
+          self.state?.log("MEDIA CONTROL FAILED · SPOTIFY OR AUTOMATION PERMISSION")
+        }
+      }
+    }
+    do {
+      try p.run()
+    } catch {
+      lastOutput = "MEDIA CONTROL FAILED · \(error.localizedDescription.uppercased())"
+      state?.log("MEDIA CONTROL FAILED · \(error.localizedDescription)")
+    }
   }
   private func openApplication(_ value: String) {
     let expanded = NSString(string: value).expandingTildeInPath
@@ -308,16 +345,56 @@ import Foundation
       URL(fileURLWithPath: "/Applications/\(value.hasSuffix(".app") ? value : value + ".app")"),
     ]
     guard let url = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) })
-    else { return }
+    else {
+      lastOutput = "OPEN APP FAILED · APPLICATION NOT FOUND"
+      state?.log("OPEN APP FAILED · \(value) NOT FOUND")
+      return
+    }
     NSWorkspace.shared.openApplication(
-      at: url, configuration: NSWorkspace.OpenConfiguration(), completionHandler: nil)
+      at: url, configuration: NSWorkspace.OpenConfiguration()
+    ) { [weak self] _, error in
+      let failure = error?.localizedDescription
+      let appName = url.deletingPathExtension().lastPathComponent
+      Task { @MainActor [weak self, failure, appName] in
+        if let failure {
+          self?.lastOutput = "OPEN APP FAILED · \(failure.uppercased())"
+          self?.state?.log("OPEN APP FAILED · \(failure)")
+        } else {
+          self?.report("OPENED APP · \(appName)")
+        }
+      }
+    }
   }
   private func runShell(_ command: String) {
     guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/bin/zsh")
     p.arguments = ["-lc", command]
-    try? p.run()
+    p.terminationHandler = { [weak self] process in
+      let status = process.terminationStatus
+      Task { @MainActor [weak self, status] in
+        if status == 0 {
+          self?.report("SHELL COMMAND FINISHED")
+        } else {
+          self?.lastOutput = "SHELL COMMAND FAILED · EXIT \(status)"
+          self?.state?.log("SHELL COMMAND FAILED · EXIT \(status)")
+        }
+      }
+    }
+    do {
+      try p.run()
+    } catch {
+      lastOutput = "SHELL COMMAND FAILED · \(error.localizedDescription.uppercased())"
+      state?.log("SHELL COMMAND FAILED · \(error.localizedDescription)")
+    }
+  }
+  private func report(_ message: String) {
+    lastOutput = message
+    state?.log(message)
+  }
+  private func reportFailure(_ binding: ActionBinding, reason: String) {
+    lastOutput = "\(binding.action.rawValue.uppercased()) FAILED · \(reason.uppercased())"
+    state?.log("ACTION FAILED · \(binding.name) · \(reason)")
   }
 }
 
@@ -375,5 +452,6 @@ import Foundation
 extension Notification.Name {
   static let jarboGenerateImage = Notification.Name("JarboGenerateImage")
   static let jarboToggleHUD = Notification.Name("JarboToggleHUD")
+  static let jarboToggleCamera = Notification.Name("JarboToggleCamera")
   static let jarboShowActions = Notification.Name("JarboShowActions")
 }
