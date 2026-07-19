@@ -1,6 +1,6 @@
-**PRODUCT • ENGINEERING • RESEARCH**
-
 # JARBO
+
+**PRODUCT • ENGINEERING • RESEARCH**
 
 *A Context-Aware Multimodal Desktop Assistant*
 
@@ -144,12 +144,15 @@ RESULT + AUDIT + USER FEEDBACK
 
 ## Core event contract
 
+The following is the shipped native Swift contract for Jarbo 1.0.9. Later roadmap phases may extend it only through an explicit migration.
+
 ```text
-Event {
-id, timestamp, source, type, confidence, payload, session_id
-}
-Intent { name, parameters, evidence[], confidence, requested_capabilities[] }
-ActionResult { status, output, side_effects[], undo_token?, error? }
+JarboEvent { id, timestamp, kind, value, hand? }
+JarboIntent { id, kind, sourceEventID }
+Capability { rawValue }
+ActionRequest { id, intentID, capability, action, value }
+ActionResult { requestID?, status, message, verified }
+AuditEvent { id, timestamp, eventID, intentID?, requestID?, result, detail }
 ```
 
 # Runtime Flows
@@ -198,7 +201,28 @@ offer retry, alternate input, settings, or safe manual step
 
 # Repository & Folder Structure
 
-A modular monorepo layout
+## Current native Swift/macOS layout (v1.0.9)
+
+Jarbo 1.0.9 is a Swift Package and macOS application. Current contributors should work within these boundaries:
+
+```text
+Jarbo/
+├── Sources/Jarbo/        # SwiftUI/AppKit application, Vision tracking, automation
+├── Tests/JarboTests/     # Swift unit and contract tests
+├── Resources/            # bundled local gesture priors and notices
+├── docs/                 # product, architecture, audit, smoke, and risk records
+├── release-notes/        # versioned prerelease notes
+├── release-status/       # machine-readable HOLD/APPROVED release gates
+├── .github/workflows/    # macOS verification and release publishing
+├── Package.swift
+├── preflight.sh
+├── verify.sh
+└── build-app.sh
+```
+
+## Future modular monorepo target
+
+The layout below is a future architecture option, not the Jarbo 1.0.9 repository contract. It may be adopted only after an approved architecture decision and migration plan.
 
 ```text
 jarbo/
@@ -224,7 +248,7 @@ jarbo/
 └── .github/workflows/
 ```
 
-## Repository rules
+## Future repository rules
 
 - No platform API calls outside packages/platform.
 
@@ -236,7 +260,20 @@ jarbo/
 
 - Every package owns a README, public API, tests, and an owner/reviewer field.
 
-# Recommended Technology Stack
+# Technology Stack
+
+## Current v1.0.9 stack
+
+| **Layer** | **Current choice** |
+|----|----|
+| Application runtime and UI | Swift 6, SwiftUI, and AppKit on macOS 14+ |
+| Vision | Apple Vision 21-point hand landmarks |
+| Personalized inference | Local Core ML for eligible static poses |
+| Desktop automation | Accessibility/CoreGraphics events, NSWorkspace, and explicit AppleScript/shell bindings |
+| Persistence | Local Codable JSON and application-support model artifacts |
+| Testing and packaging | SwiftPM/XCTest, `xcrun`, universal arm64/x86_64 app bundle, ad-hoc development signing |
+
+## Future evaluation target
 
 Choose boring interfaces around fast-moving AI components
 
@@ -850,19 +887,19 @@ From developer build to trustworthy beta
 
 ## Release pipeline
 
-10. Lint, type check, unit, contract, integration, safety, and replay tests.
+1. Lint, type check, unit, contract, integration, safety, and replay tests.
 
-11. Build locked artifacts on clean runners.
+2. Build locked artifacts on clean runners.
 
-12. Generate dependency inventory/SBOM and scan licenses/vulnerabilities.
+3. Generate dependency inventory/SBOM and scan licenses/vulnerabilities.
 
-13. Sign/notarize platform packages and publish checksums.
+4. Sign/notarize platform packages and publish checksums.
 
-14. Run clean-install, upgrade, downgrade/rollback, and uninstall tests.
+5. Run clean-install, upgrade, downgrade/rollback, and uninstall tests.
 
-15. Stage rollout with feature flags and a kill switch for risky providers/skills.
+6. Stage rollout with feature flags and a kill switch for risky providers/skills.
 
-16. Publish release notes, known limitations, data migrations, and support instructions.
+7. Publish release notes, known limitations, data migrations, and support instructions.
 
 ## Model assets
 

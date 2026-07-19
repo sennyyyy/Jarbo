@@ -17,6 +17,18 @@ import Foundation
   private var permissionTimer: Timer?
   private var lastAccessWarning = Date.distantPast
   private var heldButtons: [CGMouseButton: CGPoint] = [:]
+
+  nonisolated static func webSearchURL(for query: String) -> URL? {
+    var components = URLComponents(string: "https://www.google.com/search")
+    components?.queryItems = [URLQueryItem(name: "q", value: query)]
+    // Foundation leaves literal "+" characters in a query item. Encode them explicitly so
+    // search providers do not interpret a requested plus sign as form-style whitespace.
+    let encodedQuery = components?.percentEncodedQuery?.replacingOccurrences(
+      of: "+", with: "%2B")
+    components?.percentEncodedQuery = encodedQuery
+    return components?.url
+  }
+
   init() {
     refreshAccessibility()
     permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) {
@@ -66,14 +78,14 @@ import Foundation
         reportFailure(binding, reason: "file not found or could not be opened")
       }
     case .webSearch:
-      if let q = binding.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-        let u = URL(string: "https://www.google.com/search?q=\(q)")
-      {
+      if let u = Self.webSearchURL(for: binding.value) {
         if NSWorkspace.shared.open(u) {
           report("WEB SEARCH OPENED")
         } else {
           reportFailure(binding, reason: "macOS could not open the browser")
         }
+      } else {
+        reportFailure(binding, reason: "search URL could not be created")
       }
     case .shell: runShell(binding.value)
     case .speak:
@@ -319,24 +331,7 @@ import Foundation
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
     p.arguments = ["-e", script]
-    p.terminationHandler = { [weak self] process in
-      let status = process.terminationStatus
-      Task { @MainActor [weak self, status] in
-        guard let self else { return }
-        if status == 0 {
-          self.report("MEDIA CONTROL SENT")
-        } else {
-          self.lastOutput = "MEDIA CONTROL FAILED · CHECK SPOTIFY/AUTOMATION PERMISSION"
-          self.state?.log("MEDIA CONTROL FAILED · SPOTIFY OR AUTOMATION PERMISSION")
-        }
-      }
-    }
-    do {
-      try p.run()
-    } catch {
-      lastOutput = "MEDIA CONTROL FAILED · \(error.localizedDescription.uppercased())"
-      state?.log("MEDIA CONTROL FAILED · \(error.localizedDescription)")
-    }
+    runProcess(p, reporting: .media)
   }
   private func openApplication(_ value: String) {
     let expanded = NSString(string: value).expandingTildeInPath
@@ -370,22 +365,56 @@ import Foundation
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/bin/zsh")
     p.arguments = ["-lc", command]
-    p.terminationHandler = { [weak self] process in
+    runProcess(p, reporting: .shell)
+  }
+  private enum ProcessReport: Sendable {
+    case media
+    case shell
+
+    var successMessage: String {
+      switch self {
+      case .media: "MEDIA CONTROL SENT"
+      case .shell: "SHELL COMMAND FINISHED"
+      }
+    }
+
+    var launchFailurePrefix: String {
+      switch self {
+      case .media: "MEDIA CONTROL FAILED"
+      case .shell: "SHELL COMMAND FAILED"
+      }
+    }
+
+    func terminationFailure(status: Int32) -> (output: String, log: String) {
+      switch self {
+      case .media:
+        (
+          "MEDIA CONTROL FAILED · CHECK SPOTIFY/AUTOMATION PERMISSION",
+          "MEDIA CONTROL FAILED · SPOTIFY OR AUTOMATION PERMISSION")
+      case .shell:
+        ("SHELL COMMAND FAILED · EXIT \(status)", "SHELL COMMAND FAILED · EXIT \(status)")
+      }
+    }
+  }
+  private func runProcess(_ process: Process, reporting outcome: ProcessReport) {
+    process.terminationHandler = { [weak self, outcome] process in
       let status = process.terminationStatus
-      Task { @MainActor [weak self, status] in
+      Task { @MainActor [weak self, outcome, status] in
+        guard let self else { return }
         if status == 0 {
-          self?.report("SHELL COMMAND FINISHED")
+          self.report(outcome.successMessage)
         } else {
-          self?.lastOutput = "SHELL COMMAND FAILED · EXIT \(status)"
-          self?.state?.log("SHELL COMMAND FAILED · EXIT \(status)")
+          let failure = outcome.terminationFailure(status: status)
+          self.lastOutput = failure.output
+          self.state?.log(failure.log)
         }
       }
     }
     do {
-      try p.run()
+      try process.run()
     } catch {
-      lastOutput = "SHELL COMMAND FAILED · \(error.localizedDescription.uppercased())"
-      state?.log("SHELL COMMAND FAILED · \(error.localizedDescription)")
+      lastOutput = "\(outcome.launchFailurePrefix) · \(error.localizedDescription.uppercased())"
+      state?.log("\(outcome.launchFailurePrefix) · \(error.localizedDescription)")
     }
   }
   private func report(_ message: String) {

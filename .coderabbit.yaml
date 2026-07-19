@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+reviews:
+  profile: "assertive"
+  pre_merge_checks:
+    # A blanket 80% function-docstring target is not an appropriate release gate for this
+    # native Swift alpha; public API documentation can be enforced separately when stabilized.
+    docstrings:
+      mode: "off"

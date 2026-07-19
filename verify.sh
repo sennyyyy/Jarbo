@@ -9,7 +9,7 @@ mkdir -p "$ROOT/.build/VerifyModuleCache" "$ROOT/.build/swiftpm"
 env \
   CLANG_MODULE_CACHE_PATH="$ROOT/.build/VerifyModuleCache" \
   SWIFTPM_MODULECACHE_OVERRIDE="$ROOT/.build/VerifyModuleCache" \
-  swift test --disable-sandbox --scratch-path "$ROOT/.build/swiftpm"
+  xcrun swift test --disable-sandbox --scratch-path "$ROOT/.build/swiftpm"
 ./build-app.sh
 
 APP="$ROOT/dist/Jarbo.app"

@@ -93,14 +93,14 @@ Model build/delete/rebuild/relaunch behavior must still pass the v1.0.9 hardware
 - [Phase 0 review](docs/V1.0.9-PHASE-0-REVIEW.md)
 - [Proposed version scope](docs/NEXT-VERSION.md)
 
-The `13c7522` candidate passes clean-checkout verification and GitHub CI. The current Phase 0 and release decision remains **HOLD** until manual safety/permission tests, performance gates, and soak testing pass.
+The `13c7522` source candidate passes clean-checkout verification. GitHub CI passed on the later, non-tree-equivalent evidence commits [`fc1b9b8`](https://github.com/sennyyyy/Jarbo/actions/runs/29638541327) and [`47ec117`](https://github.com/sennyyyy/Jarbo/actions/runs/29638674958); those runs prove the branch workflow, not candidate-specific CI for `13c7522`. The current Phase 0 and release decision remains **HOLD** until manual safety/permission tests, candidate CI, performance gates, and soak testing pass.
 
 ## Publishing a prerelease
 
-After all gates are complete, ensure `release-notes/v1.0.9.md` accurately matches the observed candidate, then run:
+After all gates are complete, ensure `release-notes/v1.0.9.md` accurately matches the observed candidate and commit `APPROVED` to `release-status/v1.0.9`. The release status file is the machine-readable publishing authority and must agree with the signed Phase 0 review. Then run from a clean `main` worktree:
 
 ```bash
 ./release.sh 1.0.9
 ```
 
-The release helper updates version/build metadata, verifies and packages the universal app, commits the intended source and notes, tags the commit, and pushes the branch and tag. GitHub Actions publishes **ALPHA Jarbo 1.0.9** as a prerelease. Do not publish while the Phase 0 review remains HOLD.
+The release helper refuses HOLD or dirty worktrees, updates version/build metadata, verifies and packages the universal app, stages only `Info.plist`, tags the release commit, and pushes the branch and tag. GitHub Actions independently checks `release-status/v1.0.9` before publishing **ALPHA Jarbo 1.0.9** as a prerelease.

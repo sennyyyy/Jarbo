@@ -469,10 +469,11 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
   private func load() {
     guard let data = try? Data(contentsOf: saveURL) else { return }
     guard let s = try? JSONDecoder().decode(Saved.self, from: data) else {
-      let backup = saveURL.deletingLastPathComponent().appending(
-        path: "config-corrupt-\(Int(Date().timeIntervalSince1970)).json")
-      try? FileManager.default.copyItem(at: saveURL, to: backup)
-      log("SETTINGS RECOVERY · INVALID CONFIG BACKED UP")
+      if Self.backupCorruptConfig(at: saveURL) != nil {
+        log("SETTINGS RECOVERY · INVALID CONFIG BACKED UP")
+      } else {
+        log("SETTINGS RECOVERY · INVALID CONFIG BACKUP FAILED")
+      }
       return
     }
     theme = s.theme
@@ -484,6 +485,19 @@ enum HUDWidgetKind: String, CaseIterable, Codable, Identifiable {
     handMotionTemplates = s.handMotionTemplates ?? []
     cameraEnabled = s.cameraEnabled ?? false
     notes = s.notes
+  }
+  @discardableResult
+  static func backupCorruptConfig(
+    at url: URL, timestamp: Date = Date(), fileManager: FileManager = .default
+  ) -> URL? {
+    let backup = url.deletingLastPathComponent().appending(
+      path: "config-corrupt-\(Int(timestamp.timeIntervalSince1970)).json")
+    do {
+      try fileManager.moveItem(at: url, to: backup)
+      return backup
+    } catch {
+      return nil
+    }
   }
   static func migrateBindings(_ saved: [ActionBinding], from schema: Int) -> [ActionBinding] {
     var result = saved
