@@ -27,11 +27,12 @@ or stuck control.
 
 ### Configured action path
 
-- [ ] Open `Configure Controls…` / Actions.
-- [ ] Select or create one harmless `Toggle HUD` binding.
-- [ ] Trigger its test/action once and confirm the HUD hides exactly once.
-- [ ] Trigger it once again and confirm one HUD reappears.
+- [ ] If a `Toggle HUD` gesture is already configured and trusted, trigger it once
+  to hide and once to show the HUD.
 - [ ] Confirm there is no rapid repeat, duplicate HUD, or unexpected action.
+- [ ] If no trusted binding exists, mark this subcheck `Deferred` until gesture
+  input is validated in Parts D–F. Do not create or activate an unverified hand
+  binding solely for this lifecycle test.
 
 Result: **Pending**
 
