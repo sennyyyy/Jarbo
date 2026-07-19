@@ -35,6 +35,17 @@ For a faster local build without running the complete verification suite:
 open dist/Jarbo.app
 ```
 
+To update the complete Desktop archive after a verified change or new version:
+
+```bash
+./sync-desktop.sh
+```
+
+This synchronizes the current source, documentation, release notes, packaged
+artifacts, version snapshots, and complete Git history to `~/Desktop/Jarbo`.
+Desktop-only files and older version folders are preserved; rebuildable compiler
+caches are omitted.
+
 On first launch, grant only the permissions needed for the controls you intend to use. If macOS blocks the first development launch, right-click `dist/Jarbo.app` in Finder and choose **Open**; do not suppress macOS privacy indicators.
 
 ## Camera and application behavior
