@@ -104,7 +104,7 @@ Model build/delete/rebuild/relaunch behavior must still pass the v1.0.9 hardware
 - [Phase 0 review](docs/V1.0.9-PHASE-0-REVIEW.md)
 - [Proposed version scope](docs/NEXT-VERSION.md)
 
-The `13c7522` source candidate passes clean-checkout verification. GitHub CI passed on the later, non-tree-equivalent evidence commits [`fc1b9b8`](https://github.com/sennyyyy/Jarbo/actions/runs/29638541327) and [`47ec117`](https://github.com/sennyyyy/Jarbo/actions/runs/29638674958); those runs prove the branch workflow, not candidate-specific CI for `13c7522`. The current Phase 0 and release decision remains **HOLD** until manual safety/permission tests, candidate CI, performance gates, and soak testing pass.
+The `58246c2` source candidate passes a fresh-clone verification with 13/13 tests and a signed universal app. Exact-candidate [GitHub CI](https://github.com/sennyyyy/Jarbo/actions/runs/29677667695) also passes. The current Phase 0 and release decision remains **HOLD** until manual safety/permission tests, performance gates, and soak testing pass.
 
 ## Publishing a prerelease
 

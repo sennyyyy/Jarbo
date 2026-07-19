@@ -1,0 +1,89 @@
+Jarbo preflight passed
+  Swift: swift-driver version: 1.148.6 Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)
+  SDK:   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk
+  Xcode: Xcode 26.6 Build version 17F113
+warning: /Users/senhong/Library/org.swift.swiftpm/configuration is not accessible or not writable, disabling user-level cache features.
+warning: /Users/senhong/Library/org.swift.swiftpm/security is not accessible or not writable, disabling user-level cache features.
+warning: /Users/senhong/Library/Caches/org.swift.swiftpm is not accessible or not writable, disabling user-level cache features.
+warning: 'jarbo-a01-58246c2': failed loading cached manifest for 'jarbo-a01-58246c2': You don’t have permission to save the file “manifests” in the folder “org.swift.swiftpm”.
+warning: 'jarbo-a01-58246c2': failed storing manifest for 'jarbo-a01-58246c2' in cache: You don’t have permission to save the file “manifests” in the folder “org.swift.swiftpm”.
+warning: 'jarbo-a01-58246c2': failed closing manifest db cache: You don’t have permission to save the file “manifests” in the folder “org.swift.swiftpm”.
+Building for debugging...
+[0/11] /private/tmp/jarbo-a01-58246c2/.build/swiftpm/arm64-apple-macosx/debug/JarboPackageTests.derived/runner.swift
+[1/11] Write sources
+[4/11] Write Jarbo-entitlement.plist
+[5/11] Write swift-version--58304C5D6DBC2206.txt
+[7/24] Compiling Jarbo PerformanceSignposts.swift
+[8/24] Compiling Jarbo PersonalizedGestureClassifier.swift
+[9/24] Compiling Jarbo HUDComponents.swift
+[10/24] Compiling Jarbo HandLandmarks.swift
+[11/24] Compiling Jarbo AutomationService.swift
+[12/24] Compiling Jarbo CameraPreview.swift
+[13/24] Compiling Jarbo HandTrackingService.swift
+[14/24] Compiling Jarbo JarboApp.swift
+[15/24] Compiling Jarbo JarboMenuIcon.swift
+[16/24] Compiling Jarbo Models.swift
+[17/24] Compiling Jarbo ControlCenterView.swift
+[18/24] Compiling Jarbo CoreContracts.swift
+[19/24] Emitting module Jarbo
+[20/25] Compiling Jarbo SystemServices.swift
+[20/25] Write Objects.LinkFileList
+[21/25] Linking Jarbo
+[22/25] Applying Jarbo
+[24/29] Compiling JarboTests SettingsAndBindingsTests.swift
+[25/29] Emitting module JarboTests
+[26/29] Compiling JarboTests CorePipelineTests.swift
+[27/29] Compiling JarboTests TrainingReadinessTests.swift
+[28/31] Compiling JarboPackageTests runner.swift
+[29/31] Emitting module JarboPackageTests
+[29/31] Write Objects.LinkFileList
+[30/31] Linking JarboPackageTests
+Build complete! (24.20s)
+Test Suite 'All tests' started at 2026-07-19 00:15:59.260.
+Test Suite 'JarboPackageTests.xctest' started at 2026-07-19 00:15:59.262.
+Test Suite 'CorePipelineTests' started at 2026-07-19 00:15:59.262.
+Test Case '-[JarboTests.CorePipelineTests testCancellationPreventsExecution]' started.
+Test Case '-[JarboTests.CorePipelineTests testCancellationPreventsExecution]' passed (0.003 seconds).
+Test Case '-[JarboTests.CorePipelineTests testMockGestureTraversesVerifiedVerticalSlice]' started.
+Test Case '-[JarboTests.CorePipelineTests testMockGestureTraversesVerifiedVerticalSlice]' passed (0.000 seconds).
+Test Case '-[JarboTests.CorePipelineTests testNoGestureCannotExecuteAnAction]' started.
+Test Case '-[JarboTests.CorePipelineTests testNoGestureCannotExecuteAnAction]' passed (0.000 seconds).
+Test Case '-[JarboTests.CorePipelineTests testTrackingLossReleasesControlsWithoutActionExecution]' started.
+Test Case '-[JarboTests.CorePipelineTests testTrackingLossReleasesControlsWithoutActionExecution]' passed (0.000 seconds).
+Test Case '-[JarboTests.CorePipelineTests testUnknownCapabilityIsDeniedWithoutCallingExecutor]' started.
+Test Case '-[JarboTests.CorePipelineTests testUnknownCapabilityIsDeniedWithoutCallingExecutor]' passed (0.000 seconds).
+Test Suite 'CorePipelineTests' passed at 2026-07-19 00:15:59.266.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.004 (0.005) seconds
+Test Suite 'SettingsAndBindingsTests' started at 2026-07-19 00:15:59.266.
+Test Case '-[JarboTests.SettingsAndBindingsTests testBindingRoundTripAndValidation]' started.
+Test Case '-[JarboTests.SettingsAndBindingsTests testBindingRoundTripAndValidation]' passed (0.001 seconds).
+Test Case '-[JarboTests.SettingsAndBindingsTests testCorruptConfigIsMovedToOneTimeBackup]' started.
+Test Case '-[JarboTests.SettingsAndBindingsTests testCorruptConfigIsMovedToOneTimeBackup]' passed (0.002 seconds).
+Test Case '-[JarboTests.SettingsAndBindingsTests testLegacyBindingMigrationRestoresSafeEssentials]' started.
+Test Case '-[JarboTests.SettingsAndBindingsTests testLegacyBindingMigrationRestoresSafeEssentials]' passed (0.000 seconds).
+Test Case '-[JarboTests.SettingsAndBindingsTests testMissingSettingsFieldsReceiveSafeDefaults]' started.
+Test Case '-[JarboTests.SettingsAndBindingsTests testMissingSettingsFieldsReceiveSafeDefaults]' passed (0.000 seconds).
+Test Case '-[JarboTests.SettingsAndBindingsTests testWebSearchURLPreservesReservedCharactersInsideQueryValue]' started.
+Test Case '-[JarboTests.SettingsAndBindingsTests testWebSearchURLPreservesReservedCharactersInsideQueryValue]' passed (0.000 seconds).
+Test Suite 'SettingsAndBindingsTests' passed at 2026-07-19 00:15:59.270.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.004 (0.004) seconds
+Test Suite 'TrainingReadinessTests' started at 2026-07-19 00:15:59.271.
+Test Case '-[JarboTests.TrainingReadinessTests testDynamicOrientationAndInvalidFeaturesNeverEnableStaticModel]' started.
+Test Case '-[JarboTests.TrainingReadinessTests testDynamicOrientationAndInvalidFeaturesNeverEnableStaticModel]' passed (0.000 seconds).
+Test Case '-[JarboTests.TrainingReadinessTests testIncompleteExtraClassIsIgnoredAndCountsAreCapped]' started.
+Test Case '-[JarboTests.TrainingReadinessTests testIncompleteExtraClassIsIgnoredAndCountsAreCapped]' passed (0.000 seconds).
+Test Case '-[JarboTests.TrainingReadinessTests testTenNoGestureAndTwoCompleteStaticClassesAreRequired]' started.
+Test Case '-[JarboTests.TrainingReadinessTests testTenNoGestureAndTwoCompleteStaticClassesAreRequired]' passed (0.000 seconds).
+Test Suite 'TrainingReadinessTests' passed at 2026-07-19 00:15:59.272.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'JarboPackageTests.xctest' passed at 2026-07-19 00:15:59.272.
+	 Executed 13 tests, with 0 failures (0 unexpected) in 0.009 (0.010) seconds
+Test Suite 'All tests' passed at 2026-07-19 00:15:59.272.
+	 Executed 13 tests, with 0 failures (0 unexpected) in 0.009 (0.012) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
+/private/tmp/jarbo-a01-58246c2/dist/Jarbo.app: replacing existing signature
+/private/tmp/jarbo-a01-58246c2/dist/Jarbo.app
+Jarbo verification passed: /private/tmp/jarbo-a01-58246c2/dist/Jarbo.app (x86_64 arm64)
