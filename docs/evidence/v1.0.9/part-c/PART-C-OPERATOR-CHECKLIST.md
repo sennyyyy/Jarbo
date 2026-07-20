@@ -87,26 +87,36 @@ CPU remained approximately 49–55% in interval samples; JARBO-109-005. See
 Coordinate this row with Codex so the existing Camera permission can be reset
 without touching unrelated privacy permissions.
 
-- [ ] Reset only Jarbo's Camera permission while Jarbo is not running.
-- [ ] Relaunch, select Camera On, and choose `Don't Allow`.
-- [ ] Confirm Jarbo remains open and reports Camera Permission Required.
-- [ ] Confirm retry/recovery guidance opens the correct System Settings page.
-- [ ] Grant Camera access in System Settings and return to Jarbo.
+- [x] Reset only Jarbo's Camera permission while Jarbo is not running.
+- [x] Relaunch, select Camera On, and choose `Don't Allow`.
+- [x] Confirm Jarbo remains open and reports Camera Permission Required.
+- [x] Confirm retry/recovery guidance opens the correct System Settings page.
+- [x] Grant Camera access in System Settings and return to Jarbo.
 - [ ] Confirm one camera session can start without duplicate processes or relaunch.
 
-Result: **Pending**
+Result: **Pass with limitations**
 
-Notes/evidence:
+Notes/evidence: Human tester confirmed denial and grant recovery. Jarbo retained
+Camera On intent while denied, displayed no unauthorized feed/privacy indicator,
+opened the correct settings page, and recovered one live session. However, the
+process changed from PID 65214 to PID 66409 during recovery. No matching July 20
+crash report was found, but recovery without relaunch was not demonstrated;
+JARBO-109-006. See `C05-permission-reset.log`.
 
 ## C06 — Revoke Camera while active
 
-- [ ] Begin with one active camera session and paused hand controls.
-- [ ] In System Settings, revoke Camera access for Jarbo while it is active.
-- [ ] Confirm capture stops or fails safely and the privacy indicator clears.
-- [ ] Confirm overlays/candidates clear and no action fires.
-- [ ] Confirm Jarbo remains open with accurate recovery guidance.
+- [x] Begin with one active camera session and paused hand controls.
+- [x] In System Settings, revoke Camera access for Jarbo while it is active.
+- [x] Confirm capture stops or fails safely and the privacy indicator clears.
+- [x] Confirm overlays/candidates clear and no action fires.
+- [x] Confirm Jarbo remains open with accurate recovery guidance.
 - [ ] Re-enable Camera only after the failure state has been recorded.
 
-Result: **Pending**
+Result: **Pass**
 
-Notes/evidence:
+Notes/evidence: Human tester confirmed all visible revocation checks. Jarbo
+remained one process on PID 66409, the same process used before revocation, and
+no July 20 crash report appeared. Saved `cameraEnabled: true` intent remained
+preserved while live Camera authorization was revoked. Dedicated held-button
+release remains a Part E safety check. Camera permission remains Off pending
+post-test cleanup. See `C06-runtime-revocation.log`.

@@ -1,0 +1,14 @@
+C06 active pre-revocation state: Mon Jul 20 09:32:11 PDT 2026
+Jarbo process count: 1
+66409 01:09  55.2 123024 R    /Applications/Jarbo.app/Contents/MacOS/Jarbo
+cameraEnabled intent: True
+Human observation: grant recovery confirmed, one live feed and privacy indicator active.
+C06 runtime revocation confirmed by human tester: Mon Jul 20 09:40 PDT 2026
+Post-revocation Jarbo process count: 1
+66409 Mon Jul 20 09:31:02 2026 41.7 80352 R /Applications/Jarbo.app/Contents/MacOS/Jarbo
+cameraEnabled saved intent after revocation: True
+Human observation: feed and privacy indicator stopped; overlays/candidates cleared; no action fired; app stayed open with accurate recovery guidance.
+Process audit: PID 66409 survived unchanged; no duplicate process.
+Crash-report audit: no Jarbo crash report dated July 20 was found in DiagnosticReports.
+Result: Pass. Dedicated held-button release remains a Part E safety check.
+Post-test cleanup: Camera permission remains Off until the human tester re-enables it.

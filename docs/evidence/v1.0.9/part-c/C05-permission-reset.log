@@ -1,0 +1,26 @@
+C05 permission reset started: Mon Jul 20 09:27:24 PDT 2026
+Before quit PID: 58187
+cameraEnabled before quit: False
+Jarbo exited normally
+Successfully reset Camera approval status for com.senhong.jarbo
+Successfully reset Camera approval status for com.senhong.jarbo
+Successfully reset Camera approval status for com.senhong.jarbo
+Successfully reset Camera approval status for com.senhong.jarbo
+Successfully reset Camera approval status for com.senhong.jarbo
+Reset Camera permission for com.senhong.jarbo only
+C05 post-reset launch: Mon Jul 20 09:28:27 PDT 2026
+Jarbo process count: 1
+65214 00:52 /Applications/Jarbo.app/Contents/MacOS/Jarbo
+cameraEnabled after relaunch: False
+C05 denial confirmed by human tester: Mon Jul 20 09:30:03 PDT 2026
+Jarbo process count: 1
+65214 02:28 S    /Applications/Jarbo.app/Contents/MacOS/Jarbo
+cameraEnabled intent after denial: True
+Human observation: app remained open, permission-denied state displayed, no feed/privacy indicator.
+C05 grant recovery confirmed by human tester: Mon Jul 20 09:31 PDT 2026
+Post-grant Jarbo process count: 1
+66409 Mon Jul 20 09:31:02 2026 /Applications/Jarbo.app/Contents/MacOS/Jarbo
+Human observation: one live feed and macOS privacy indicator active after grant.
+Process audit: denial PID 65214 changed to recovery PID 66409.
+Crash-report audit: no Jarbo crash report dated July 20 was found in DiagnosticReports.
+Result: Pass with limitations. Permission recovery succeeded, but recovery without relaunch was not demonstrated; JARBO-109-006.
