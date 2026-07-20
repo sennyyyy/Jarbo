@@ -34,9 +34,9 @@ or stuck control.
   input is validated in Parts D–F. Do not create or activate an unverified hand
   binding solely for this lifecycle test.
 
-Result: **Pending**
+Result: **Pass**
 
-Notes/evidence:
+Notes/evidence: Human tester reported expected hide/show behavior with no duplicate HUD.
 
 ## B02 — Close and restore paths
 
@@ -64,9 +64,11 @@ Test each path from a freshly closed HUD so results do not overlap.
 - [ ] Open the Jarbo menu and select `Show Jarbo HUD`.
 - [ ] Confirm exactly one HUD reopens.
 
-Result: **Pending**
+Result: **Fail — JARBO-109-004**
 
-Notes/evidence:
+Notes/evidence: The human tester reported that the red-close lifecycle terminates
+Jarbo. The matching canonical crash report records `EXC_BAD_ACCESS` in
+`AppDelegate.applicationShouldHandleReopen(_:hasVisibleWindows:)`.
 
 ## B03 — Focus preservation
 
@@ -78,9 +80,10 @@ Notes/evidence:
 - [ ] Confirm typed text continues going only to the editor.
 - [ ] Turn Camera Off after the observation unless it is intentionally needed for B05.
 
-Result: **Pending**
+Result: **Pass**
 
-Notes/evidence:
+Notes/evidence: Human tester reported that the other application retained focus.
+No screen recording was attached.
 
 ## B04 — Full screen and Spaces
 
@@ -91,9 +94,9 @@ Notes/evidence:
 - [ ] Confirm Jarbo does not appear above every Space unexpectedly.
 - [ ] Return to Jarbo and confirm one HUD remains usable.
 
-Result: **Pending**
+Result: **Pass**
 
-Notes/evidence:
+Notes/evidence: Human tester reported expected full-screen and Space behavior.
 
 ## B05 — 30-minute hidden/background observation
 
@@ -107,9 +110,10 @@ Notes/evidence:
 - [ ] After 30 minutes, show the HUD and confirm one responsive window appears.
 - [ ] Record ending CPU and memory; note any sustained increase or instability.
 
-Result: **Pending**
+Result: **Pass with limitations**
 
-Notes/evidence:
+Notes/evidence: Human tester reported expected 30-minute background behavior;
+required CPU/memory start/end evidence was not attached.
 
 ## B06 — Quit and relaunch
 
