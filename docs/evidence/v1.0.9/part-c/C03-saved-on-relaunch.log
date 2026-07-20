@@ -1,0 +1,10 @@
+C03 saved-On quit started: Mon Jul 20 09:13:47 PDT 2026
+Before quit PID: 56264
+56264 03:06 /Applications/Jarbo.app/Contents/MacOS/Jarbo
+Saved cameraEnabled before quit: True
+Jarbo exited normally
+Saved cameraEnabled after quit: True
+C03 saved-On relaunch observed: Mon Jul 20 09:14:16 PDT 2026
+Jarbo process count: 1
+58187     1 00:18 R    /Applications/Jarbo.app/Contents/MacOS/Jarbo
+Reloaded cameraEnabled: True

@@ -1,0 +1,65 @@
+Processes: 704 total, 5 running, 699 sleeping, 4496 threads 
+2026/07/20 09:24:55
+Load Avg: 6.08, 7.37, 10.16 
+CPU usage: 16.55% user, 18.17% sys, 65.27% idle 
+SharedLibs: 432M resident, 97M data, 75M linkedit.
+MemRegions: 1168843 total, 3479M resident, 72M private, 1237M shared.
+PhysMem: 15G used (2988M wired, 7176M compressor), 69M unused.
+VM: 384T vsize, 6144M framework vsize, 4714407(0) swapins, 5642817(0) swapouts.
+Networks: packets: 32692760/37G in, 8156904/2953M out.
+Disks: 115561276/2223G read, 25028305/544G written.
+
+PID    COMMAND %CPU MEM  TIME     #TH  STATE  
+58187  Jarbo   0.0  118M 07:10.35 10/1 running
+Processes: 704 total, 2 running, 702 sleeping, 4499 threads 
+2026/07/20 09:24:56
+Load Avg: 6.08, 7.37, 10.16 
+CPU usage: 20.82% user, 15.94% sys, 63.23% idle 
+SharedLibs: 432M resident, 97M data, 75M linkedit.
+MemRegions: 0 total, 0B resident, 72M private, 1237M shared.
+PhysMem: 15G used (3008M wired, 7230M compressor), 69M unused.
+VM: 384T vsize, 6144M framework vsize, 4714415(8) swapins, 5642817(0) swapouts.
+Networks: packets: 32692802/37G in, 8156941/2953M out.
+Disks: 115561542/2223G read, 25028312/544G written.
+
+PID    COMMAND %CPU MEM   TIME     #TH  STATE   
+58187  Jarbo   27.1 118M+ 07:10.99 10   sleeping
+Processes: 704 total, 15 running, 689 sleeping, 4516 threads 
+2026/07/20 09:24:58
+Load Avg: 6.07, 7.35, 10.13 
+CPU usage: 18.38% user, 14.56% sys, 67.4% idle 
+SharedLibs: 432M resident, 97M data, 75M linkedit.
+MemRegions: 0 total, 0B resident, 72M private, 1237M shared.
+PhysMem: 15G used (3073M wired, 7522M compressor), 64M unused.
+VM: 384T vsize, 6144M framework vsize, 4714547(132) swapins, 5642817(0) swapouts.
+Networks: packets: 32692833/37G in, 8156978/2953M out.
+Disks: 115561844/2223G read, 25028511/544G written.
+
+PID    COMMAND %CPU MEM   TIME     #TH  STATE   
+58187  Jarbo   55.1 118M- 07:11.62 10/1 running 
+Processes: 705 total, 3 running, 1 stuck, 701 sleeping, 4551 threads 
+2026/07/20 09:24:59
+Load Avg: 6.07, 7.35, 10.13 
+CPU usage: 16.57% user, 11.63% sys, 71.78% idle 
+SharedLibs: 432M resident, 97M data, 75M linkedit.
+MemRegions: 12481 total, 31M resident, 72M private, 1237M shared.
+PhysMem: 15G used (2991M wired, 7539M compressor), 67M unused.
+VM: 386T vsize, 6144M framework vsize, 4714555(8) swapins, 5642817(0) swapouts.
+Networks: packets: 32692845/37G in, 8156988/2953M out.
+Disks: 115564710/2223G read, 25028518/544G written.
+
+PID    COMMAND %CPU MEM   TIME     #TH  STATE   
+58187  Jarbo   49.7 118M+ 07:12.22 10/1 running 
+Processes: 705 total, 3 running, 702 sleeping, 4527 threads 
+2026/07/20 09:25:00
+Load Avg: 6.07, 7.35, 10.13 
+CPU usage: 17.12% user, 9.22% sys, 73.65% idle 
+SharedLibs: 432M resident, 97M data, 75M linkedit.
+MemRegions: 0 total, 0B resident, 72M private, 1237M shared.
+PhysMem: 15G used (2990M wired, 7507M compressor), 63M unused.
+VM: 386T vsize, 6144M framework vsize, 4714563(8) swapins, 5642817(0) swapouts.
+Networks: packets: 32692883/37G in, 8157019/2953M out.
+Disks: 115564714/2223G read, 25028520/544G written.
+
+PID    COMMAND %CPU MEM   TIME     #TH  STATE   
+58187  Jarbo   55.2 118M- 07:12.86 10   sleeping
