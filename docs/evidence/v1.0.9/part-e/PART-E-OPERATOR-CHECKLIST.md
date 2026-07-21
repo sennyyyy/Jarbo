@@ -59,18 +59,27 @@ Video was not attached. JARBO-109-011/012; see `E01-pointer-observation.md` and
 
 ## E02 — Sensitivity response and persistence
 
-- [ ] With controls paused, change sensitivity from `0.50×` to a clearly
-  different safe value (for example `0.30×`).
-- [ ] Briefly resume on the test pad and confirm movement response changes.
-- [ ] Pause controls and verify no button is held.
-- [ ] Quit normally with Command-Q; coordinate the isolated-profile relaunch
-  with Codex rather than double-clicking the app.
-- [ ] Confirm the changed sensitivity persists after relaunch.
-- [ ] Restore `0.50×` unless the changed value is intentionally retained.
+- [x] With controls paused, change sensitivity from `0.50×` to a clearly
+  different safe value (`0.70×` used).
+- [x] Briefly resume on the test pad and confirm movement response changes.
+- [x] Pause controls and verify no button is held.
+- [x] Quit normally and relaunch the same active profile with Codex. The July 21
+  test session uses the normal user profile, not the July 20 isolated profile.
+- [x] Confirm the changed sensitivity persists after relaunch.
+- [x] Restore `0.50×` unless the changed value is intentionally retained.
+  **0.70× intentionally retained during testing.**
 
-Result: **Pending**
+Result: **Pass**
 
-Notes/evidence:
+Notes/evidence: Human tester confirmed 0.70× changed response and felt better
+than 0.50×, with 0.75–0.90× described as the preferred range. With all three
+click bindings disabled, Left/Right/Middle counters remained 0 and controls
+were paused again. The normal-profile config saved 0.70×. A controlled normal
+quit/relaunch changed PID 15349 to PID 23491 with exactly one canonical process;
+the config still contains `pointerSensitivity: 0.7000000000000001` and all
+three disabled click bindings. Human tester confirmed the post-launch HUD slider
+displayed 0.70× and the click bindings remained disabled. 0.70× is intentionally
+retained during testing. See `E02-sensitivity-persistence.md`.
 
 ## E03 — Left-button hold lifecycle
 
