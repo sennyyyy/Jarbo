@@ -83,31 +83,40 @@ retained during testing. See `E02-sensitivity-persistence.md`.
 
 ## E03 — Left-button hold lifecycle
 
-- [ ] Reset the test pad and resume controls.
-- [ ] Touch physical left thumb to index over the safe pad.
-- [ ] Confirm exactly one Left down and zero Left up while contact is held.
-- [ ] Hold for two seconds and confirm no repeated down event.
-- [ ] Separate thumb/index and confirm exactly one Left up.
-- [ ] Confirm Right/Middle counters remain zero and the held indicator clears.
-- [ ] Pause controls.
+- [x] Reset the test pad and resume controls.
+- [x] Touch physical left thumb to index over the safe pad.
+- [x] Confirm exactly one Left down and zero Left up while contact is held.
+- [x] Hold for two seconds and confirm no repeated down event.
+- [x] Separate thumb/index and confirm exactly one Left up.
+- [x] Confirm Right/Middle counters remain zero and the held indicator clears.
+- [x] Pause controls.
 
-Result: **Pending**
+Result: **Pass**
 
-Notes/evidence:
+Notes/evidence: With only Primary click enabled, the human tester confirmed no
+early event, exactly one Left down during a two-second thumb/index hold, exactly
+one Left up on separation, no repeat or Right/Middle collision, and final
+released state. Primary click was disabled again after the trial. Written event
+counter observation; video not attached. See `E03-left-button-lifecycle.md`.
 
 ## E04 — Continuous left drag
 
-- [ ] Reset the pad, position over the cyan drag target, and resume controls.
-- [ ] Begin thumb/index contact and confirm one Left down.
-- [ ] Keep contact held while moving the pointer.
-- [ ] Confirm the target follows continuously without extra down/up events.
-- [ ] Separate fingers and confirm one Left up and immediate drag stop.
-- [ ] Move after release and confirm the target no longer follows.
-- [ ] Pause controls.
+- [x] Reset the pad, position over the cyan drag target, and resume controls.
+- [x] Begin thumb/index contact and confirm one Left down.
+- [x] Keep contact held while moving the pointer.
+- [x] Confirm the target follows continuously without extra down/up events.
+- [x] Separate fingers and confirm one Left up and immediate drag stop.
+- [x] Move after release and confirm the target no longer follows.
+- [x] Pause controls.
 
-Result: **Pending**
+Result: **Pass**
 
-Notes/evidence:
+Notes/evidence: With only Primary click enabled, one Left down started a
+continuous drag; the counts stayed 1/0 while held. One Left up stopped the drag
+immediately, the target did not follow after release, no wrong/repeated event
+occurred, and final state was released. Primary click was disabled again.
+Written counter observation; video not attached. See
+`E04-left-drag-lifecycle.md`.
 
 ## E05 — Right-button hold lifecycle
 
