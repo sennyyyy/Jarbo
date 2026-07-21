@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jarbo 1.0.9 Pointer Event Test Pad</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #05070b; color: #edf9ff; overflow: hidden; }
+    header { height: 104px; padding: 16px 22px; border-bottom: 1px solid #1e6675; background: #07131a; }
+    h1 { margin: 0 0 6px; font-size: 20px; letter-spacing: .06em; }
+    p { margin: 3px 0; color: #a8cbd4; font-size: 13px; }
+    button { color: #eaffff; background: #123440; border: 1px solid #42d7e8; border-radius: 8px; padding: 7px 11px; }
+    .toolbar { position: absolute; right: 22px; top: 18px; display: flex; gap: 8px; }
+    main { display: grid; grid-template-columns: 250px 1fr; height: calc(100vh - 104px); }
+    aside { padding: 16px; border-right: 1px solid #1e6675; background: #081016; overflow: auto; }
+    .counter { margin-bottom: 12px; padding: 10px; border-radius: 10px; background: #0c1a22; border: 1px solid #1c4853; }
+    .counter strong { display: block; margin-bottom: 4px; }
+    .held { color: #ff5570; font-weight: 800; }
+    .released { color: #60eea1; }
+    #pad { position: relative; overflow: hidden; user-select: none; background:
+      linear-gradient(rgba(57,211,229,.07) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(57,211,229,.07) 1px, transparent 1px), #05090d;
+      background-size: 40px 40px; }
+    #pad::before { content: "SAFE POINTER / BUTTON TEST AREA"; position: absolute; left: 50%; top: 18px;
+      transform: translateX(-50%); color: #4a7e88; letter-spacing: .18em; font-size: 12px; }
+    #target { position: absolute; left: 42%; top: 38%; width: 150px; height: 110px; display: grid;
+      place-items: center; text-align: center; border: 2px solid #65efff; border-radius: 22px;
+      background: rgba(31, 161, 184, .18); box-shadow: 0 0 28px rgba(61, 226, 255, .18); }
+    #target.dragging { border-color: #ffcf5a; background: rgba(255, 191, 56, .18); }
+    #coords { position: absolute; left: 16px; bottom: 14px; color: #80aab3; font: 12px ui-monospace, monospace; }
+    #log { height: 230px; white-space: pre-wrap; font: 11px ui-monospace, monospace; color: #9bc3cb;
+      overflow: auto; border-top: 1px solid #1c4853; padding-top: 8px; }
+    .warning { color: #ffcf5a; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ALPHA Jarbo 1.0.9 · Pointer Event Test Pad</h1>
+    <p>This page prevents navigation, context menus, and auxiliary-click actions.</p>
+    <p class="warning">Emergency release: fully open/remove the hand, then Pause Hand Controls or turn Camera Off.</p>
+    <div class="toolbar">
+      <button id="reset">Reset counters</button>
+      <button id="copy">Copy event log</button>
+    </div>
+  </header>
+  <main>
+    <aside>
+      <div class="counter"><strong>Left button</strong><span id="left-count">down 0 · up 0</span><br><span id="left-state" class="released">released</span></div>
+      <div class="counter"><strong>Right button</strong><span id="right-count">down 0 · up 0</span><br><span id="right-state" class="released">released</span></div>
+      <div class="counter"><strong>Middle button</strong><span id="middle-count">down 0 · up 0</span><br><span id="middle-state" class="released">released</span></div>
+      <p>Drag the cyan target only during E04. A correct hold keeps a button red until release.</p>
+      <div id="log" aria-live="polite"></div>
+    </aside>
+    <section id="pad">
+      <div id="target">LEFT-HOLD<br>DRAG TARGET</div>
+      <div id="coords">pointer —</div>
+    </section>
+  </main>
+  <script>
+    const names = {0: 'left', 1: 'middle', 2: 'right'};
+    const state = {
+      left: {down: 0, up: 0, held: false},
+      right: {down: 0, up: 0, held: false},
+      middle: {down: 0, up: 0, held: false}
+    };
+    const logLines = [];
+    const pad = document.querySelector('#pad');
+    const target = document.querySelector('#target');
+    const coords = document.querySelector('#coords');
+    const log = document.querySelector('#log');
+    let dragging = false;
+    let dragOffset = {x: 0, y: 0};
+
+    function stamp(message) {
+      const line = `${new Date().toISOString()}  ${message}`;
+      logLines.push(line);
+      if (logLines.length > 160) logLines.shift();
+      log.textContent = logLines.slice().reverse().join('\n');
+    }
+    function render(name) {
+      const item = state[name];
+      document.querySelector(`#${name}-count`).textContent = `down ${item.down} · up ${item.up}`;
+      const status = document.querySelector(`#${name}-state`);
+      status.textContent = item.held ? 'HELD' : 'released';
+      status.className = item.held ? 'held' : 'released';
+    }
+    function reset() {
+      for (const name of Object.keys(state)) state[name] = {down: 0, up: 0, held: false};
+      logLines.length = 0;
+      for (const name of Object.keys(state)) render(name);
+      dragging = false;
+      target.classList.remove('dragging');
+      stamp('counters reset');
+    }
+    document.addEventListener('mousedown', event => {
+      const name = names[event.button];
+      if (!name || event.target.closest('button')) return;
+      event.preventDefault();
+      state[name].down += 1;
+      state[name].held = true;
+      render(name);
+      stamp(`${name} DOWN @ ${event.clientX},${event.clientY} buttons=${event.buttons}`);
+      if (name === 'left' && event.target === target) {
+        dragging = true;
+        const rect = target.getBoundingClientRect();
+        dragOffset = {x: event.clientX - rect.left, y: event.clientY - rect.top};
+        target.classList.add('dragging');
+      }
+    }, true);
+    document.addEventListener('mouseup', event => {
+      const name = names[event.button];
+      if (!name || event.target.closest('button')) return;
+      event.preventDefault();
+      state[name].up += 1;
+      state[name].held = false;
+      render(name);
+      stamp(`${name} UP @ ${event.clientX},${event.clientY} buttons=${event.buttons}`);
+      if (name === 'left') {
+        dragging = false;
+        target.classList.remove('dragging');
+      }
+    }, true);
+    document.addEventListener('mousemove', event => {
+      coords.textContent = `pointer ${event.clientX}, ${event.clientY} · buttons=${event.buttons}`;
+      if (!dragging || !(event.buttons & 1)) return;
+      const rect = pad.getBoundingClientRect();
+      const left = Math.max(0, Math.min(rect.width - target.offsetWidth, event.clientX - rect.left - dragOffset.x));
+      const top = Math.max(0, Math.min(rect.height - target.offsetHeight, event.clientY - rect.top - dragOffset.y));
+      target.style.left = `${left}px`;
+      target.style.top = `${top}px`;
+    }, true);
+    document.addEventListener('contextmenu', event => event.preventDefault(), true);
+    document.addEventListener('auxclick', event => event.preventDefault(), true);
+    document.addEventListener('dragstart', event => event.preventDefault(), true);
+    window.addEventListener('blur', () => stamp('window lost focus; inspect held indicators'));
+    document.querySelector('#reset').addEventListener('click', reset);
+    document.querySelector('#copy').addEventListener('click', async () => {
+      await navigator.clipboard.writeText(logLines.join('\n'));
+      stamp('event log copied');
+    });
+    reset();
+  </script>
+</body>
+</html>
