@@ -9,7 +9,7 @@
 
 | Check | Human observation | Result |
 |---|---|---|
-| Circular Jarbo pointer | Buggy/intermittent; works only when the hand/index is angled rather than pointing straight toward the screen | Fail |
+| Circular Jarbo pointer | Tester reports very poor index-finger detection and that the pointer barely works reliably; it works only when the hand/index is angled rather than pointing straight toward the screen | Fail |
 | Movement at 0.50× | Controllable in current relative mode | Pass |
 | Axis/jitter | Correct axis with slight jitter | Pass with limitation |
 | Camera-edge reach | Could not continue in a direction when beginning at the relevant edge; tester prefers direct proportional pointing | Fail |
@@ -17,9 +17,10 @@
 | Resume jump | No large jump | Pass |
 | Unexpected button events | Pointer-only follow-up: Left 7 down/7 up, Right 3 down/3 up, Middle 0 down/0 up; all released | Critical safety failure |
 
-The full E01 row fails because intermittent pointer activation and camera-edge
-reach violate core acceptance even though movement, clutching, and resume
-behavior otherwise worked. JARBO-109-011 is release-blocking.
+The full E01 row fails because index-finger pointer detection is very poor, the
+pointer barely works reliably, and camera-edge reach remains necessary. These
+violate core acceptance even though movement, clutching, and resume behavior
+worked when tracking engaged. JARBO-109-011 is release-blocking.
 
 Design preference recorded after the trial: use direct proportional mapping
 from a comfortable camera-space region to the screen, with a lower effective

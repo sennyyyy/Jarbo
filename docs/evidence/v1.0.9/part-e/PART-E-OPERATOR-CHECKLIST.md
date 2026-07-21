@@ -44,9 +44,10 @@ visual label: the pad must receive the expected down/up events.
 Result: **Fail**
 
 Notes/evidence: Pointer movement at 0.50×, clutch pause, and no-jump resume
-passed, with slight jitter. The circular
-pointer was intermittent and required the index finger to be angled rather than
-pointing naturally toward the screen. Camera-edge reach remained necessary.
+passed when tracking engaged, with slight jitter. The tester reports that
+index-finger detection is very poor and the pointer barely works reliably. The
+circular pointer required the index finger to be angled rather than pointing
+naturally toward the screen. Camera-edge reach remained necessary.
 The tester prefers direct proportional screen mapping with a lower
 smoothing/sensitivity setting to improve pointing stability.
 A pointer-only counter audit on the built-in display recorded 7 unintended Left
