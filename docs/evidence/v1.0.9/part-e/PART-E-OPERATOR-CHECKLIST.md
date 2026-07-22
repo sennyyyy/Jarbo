@@ -120,31 +120,48 @@ Written counter observation; video not attached. See
 
 ## E05 — Right-button hold lifecycle
 
-- [ ] Reset the test pad and resume controls.
-- [ ] Touch physical left thumb to middle finger directly.
-- [ ] Confirm exactly one Right down and zero Right up while held.
-- [ ] Separate and confirm exactly one Right up.
-- [ ] Confirm Left/Middle counters remain zero; no left-click collision occurs.
-- [ ] Repeat once from a freshly presented hand without first opening the palm.
-- [ ] Pause controls.
+- [x] Reset the test pad and resume controls.
+- [x] Touch physical left thumb to middle finger directly.
+- [ ] Confirm exactly one Right down and zero Right up while held. **Fail:
+  released prematurely while contact remained held.**
+- [x] Separate and confirm exactly one Right up/final released state.
+- [x] Confirm Left/Middle counters remain zero; no left-click collision occurs.
+- [x] Repeat once from a freshly presented hand without first opening the palm.
+- [x] Pause controls.
 
-Result: **Pending**
+Result: **Fail**
 
-Notes/evidence:
+Notes/evidence: Direct fresh-hand thumb/middle detection and the expected HUD
+label passed. After an open palm, detection worked only about half the time.
+Right released while contact remained held, and occasional early/repeated/false
+events occurred. Separation and final released state passed. With only Context
+enabled, Left/Middle counters remained zero; Context was disabled again.
+Tester preference: index+middle extended to point, thumb/index for Left, and
+thumb/middle for Right. JARBO-109-009/013; see
+`E05-right-button-lifecycle.md`.
 
 ## E06 — Middle-button hold lifecycle
 
-- [ ] Reset the test pad and resume controls.
-- [ ] Touch physical left thumb to ring finger directly.
-- [ ] Confirm exactly one Middle down and zero Middle up while held.
-- [ ] Separate and confirm exactly one Middle up.
+- [x] Reset the test pad and resume controls.
+- [x] Touch physical left thumb to ring finger directly.
+- [x] Confirm exactly one Middle down and zero Middle up while held.
+- [x] Separate and confirm exactly one Middle up.
 - [ ] Confirm Left/Right counters remain zero; no fist/pinch collision occurs.
-- [ ] Repeat once from a freshly presented hand without first opening the palm.
-- [ ] Pause controls.
+  **Counters stayed zero with isolated Middle binding, but the HUD sometimes
+  changed to Finger Heart.**
+- [x] Repeat once from a freshly presented hand without first opening the palm.
+- [x] Pause controls.
 
-Result: **Pending**
+Result: **Fail**
 
-Notes/evidence:
+Notes/evidence: Direct fresh-hand and after-open-palm thumb/ring detection,
+expected HUD label, Middle hold, separation, and final release passed. With only
+Middle enabled, Left/Right counters remained zero. However, the classifier
+sometimes changed to Finger Heart, violating the no-collision criterion and
+risking a wrong Left click with normal bindings. Middle was disabled again.
+The tester wants contact detection while pointing naturally toward the screen,
+not only around an open-palm presentation. JARBO-109-014; see
+`E06-middle-button-lifecycle.md`.
 
 ## E07 — Interruption releases
 
