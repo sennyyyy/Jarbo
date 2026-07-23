@@ -168,16 +168,30 @@ not only around an open-palm presentation. JARBO-109-014; see
 Use all three buttons across these four safe interruption paths. Confirm the pad
 changes from `HELD` to `released` with one matching up event each time.
 
-- [ ] Hold Left, then remove the hand completely from frame.
-- [ ] Hold Right, then open Actions using the normal UI/trackpad.
-- [ ] Hold Middle, then choose Camera Off using the normal UI/trackpad.
-- [ ] Relaunch safely, hold Left, then quit normally with Command-Q.
-- [ ] No path leaves a held indicator, unmatched down event, or stuck macOS
+- [x] Hold Left, then remove the hand completely from frame.
+- [x] Hold Right, then open Actions using the normal UI/trackpad.
+- [x] Hold Middle, then choose Camera Off using the normal UI/trackpad.
+- [x] Relaunch safely, hold Left, then quit normally with Command-Q.
+- [x] No path leaves a held indicator, unmatched down event, or stuck macOS
   input after Jarbo stops/changes mode.
 
-Result: **Pending**
+Result: **Pass with limitations**
 
-Notes/evidence:
+Notes/evidence: E07-A passed. With only Primary enabled, held Left released
+promptly after full-hand removal with no repeated/wrong event or stuck state.
+E07-B passed with limitations: Actions opened and released held Right with very
+little delay, no Left/Middle event, and final release, but Right detection barely
+worked and repeated behavior passed only about half the time (JARBO-109-013).
+E07-C passed with limitations: Camera Off released Middle with very little delay,
+cleared camera/privacy, created no Left/Right or repeated event, and ended
+released. Thumb/ring barely detected unless a clear open palm faced the screen
+first and could not be established naturally from point pose
+(JARBO-109-009/014). E07-D normal quit released held Left promptly with no
+repeat/wrong event and final released state. The human saw “Jarbo quit
+unexpectedly,” but system evidence shows voluntary PID 80867 exit `(0,0,0)` and
+no July 22 crash report; JARBO-109-015. The saved profile ended Camera Off with
+all click bindings disabled. See `E07-interruption-observation.md` and
+`E07-quit-process-audit.md`.
 
 ## E08 — Close-pose collision rejection
 
