@@ -1,0 +1,7 @@
+Sun Jul 19 00:20:04 PDT 2026
+Jarbo process count: 1
+14286     1 01:38 S    /private/tmp/jarbo-a01-58246c2/dist/Jarbo.app/Contents/MacOS/Jarbo
+"CFBundleIdentifier"="com.senhong.jarbo"
+"LSDisplayName"="Jarbo"
+"pid"=14286
+"LSASN"=ASN:0x0-0x6b46b4:

@@ -24,7 +24,7 @@ struct ControlCenterView: View {
     .preferredColorScheme(.dark)
     .onAppear {
       automation.refreshAccessibility()
-      tracker.start()
+      if state.cameraEnabled { tracker.start() }
       withAnimation(.easeOut(duration: 0.8).delay(1.7)) { state.launchComplete = true }
     }
     .onReceive(NotificationCenter.default.publisher(for: .jarboGenerateImage)) { note in
@@ -35,6 +35,7 @@ struct ControlCenterView: View {
       showBindings = true
     }
     .onChange(of: showBindings) { _, visible in
+      if visible { JarboPerformance.beginActionsOpen() } else { JarboPerformance.actionsClosed() }
       tracker.setConfigurationMode(visible)
     }
     .sheet(isPresented: $showBindings) { BindingsEditor() }
@@ -85,6 +86,13 @@ struct ControlCenterView: View {
       }
       Button("ACTIONS") { showBindings = true }
       Button {
+        NotificationCenter.default.post(name: .jarboToggleCamera, object: nil)
+      } label: {
+        Label(
+          tracker.cameraState.label,
+          systemImage: tracker.running ? "video.fill" : "video.slash")
+      }.tint(tracker.running ? .green : .orange)
+      Button {
         automation.requestAccessibility()
       } label: {
         Label(
@@ -94,7 +102,7 @@ struct ControlCenterView: View {
       }.tint(automation.accessibilityGranted ? .green : .red)
       Button("GENERATE") { showImageGen = true }
       Button("WIDGETS") { showExtras = true }
-      Circle().fill(tracker.running ? .green : .red).frame(width: 8, height: 8)
+      Circle().fill(tracker.running ? .green : .orange).frame(width: 8, height: 8)
       Text(monitor.now.formatted(date: .omitted, time: .standard)).monospacedDigit()
     }
     .buttonStyle(.bordered).tint(accent).padding(.horizontal, 18).frame(height: 62)
@@ -116,8 +124,15 @@ struct ControlCenterView: View {
   private var cameraCard: some View {
     HUDCard(title: "Neural hand-control feed", color: .green) {
       ZStack {
-        CameraPreview(session: tracker.session).frame(width: 390, height: 219).clipShape(
-          RoundedRectangle(cornerRadius: 7))
+        if showBindings {
+          Color.black.frame(width: 390, height: 219).overlay {
+            Text("PREVIEW PAUSED WHILE CONFIGURING")
+              .font(.caption.bold().monospaced()).foregroundStyle(.secondary)
+          }.clipShape(RoundedRectangle(cornerRadius: 7))
+        } else {
+          CameraPreview(session: tracker.session).frame(width: 390, height: 219).clipShape(
+            RoundedRectangle(cornerRadius: 7))
+        }
         LinearGradient(
           colors: [.clear, .black.opacity(0.42)], startPoint: .center, endPoint: .bottom
         ).clipShape(RoundedRectangle(cornerRadius: 7))
@@ -375,6 +390,8 @@ struct BindingsEditor: View {
   @EnvironmentObject var automation: AutomationService
   @State private var captureHand = HandSide.right
   @State private var trainingGesture = GestureKind.fist
+  @State private var showTrainingReadiness = true
+  @State private var confirmDeleteModel = false
   @State private var draft = ActionBinding(
     name: "New command", hand: .right, gesture: .openPalm, action: .missionControl)
   var body: some View {
@@ -407,7 +424,7 @@ struct BindingsEditor: View {
           }
           ForEach(GestureCategory.allCases, id: \.self) { category in
             Section(category.rawValue) {
-              ForEach(GestureKind.trainingCatalog.filter { $0.category == category }) {
+              ForEach(GestureKind.trainingByCategory[category] ?? []) {
                 Text($0.displayName).tag($0)
               }
             }
@@ -428,24 +445,27 @@ struct BindingsEditor: View {
         Button(
           "\(trainingGesture.category == .motion ? "ADD RECENT MOTION" : "ADD POSE SAMPLE") · \(state.sampleCount(for: trainingGesture))/10"
         ) {
-          if trainingGesture.category == .motion,
-            let frames = tracker.captureRecentMotion(hand: captureHand)
-          {
-            state.addMotionTrainingSample(frames, for: trainingGesture)
-          } else if let sample = tracker.captureTrainingSample(
-            for: trainingGesture, hand: captureHand)
-          {
-            state.addTrainingSample(sample)
+          if trainingGesture.category == .motion {
+            if let frames = tracker.captureRecentMotion(hand: captureHand) {
+              state.addMotionTrainingSample(frames, for: trainingGesture)
+              state.trainingFeedback = "SAVED MOTION · vary speed and path on the next capture."
+            } else {
+              state.trainingFeedback = "MOTION CAPTURE FAILED · perform the motion, then add it immediately."
+            }
           } else {
-            state.log("TRAINING FAILED — SHOW THE SELECTED HAND TO THE CAMERA")
+            switch tracker.captureTrainingSample(for: trainingGesture, hand: captureHand) {
+            case .success(let sample):
+              JarboPerformance.trainingCapture()
+              state.addTrainingSample(sample)
+              state.log("TRAINING CAPTURE SAVED · \(trainingGesture.displayName.uppercased())")
+            case .failure(let failure):
+              state.trainingFeedback = "CAPTURE FAILED · \(failure.localizedDescription)"
+              state.log("TRAINING CAPTURE FAILED · \(failure.localizedDescription)")
+            }
           }
         }.buttonStyle(.borderedProminent)
         Button("CLEAR") { state.removeTemplate(for: trainingGesture) }
           .disabled(state.sampleCount(for: trainingGesture) == 0)
-        Button("BUILD CORE ML MODEL") {
-          tracker.trainPersonalizedModel(samples: state.handPoseTemplates)
-        }
-        .disabled(!state.coreMLTrainingReady)
         Text(
           trainingGesture.category == .motion
             ? "Perform the motion, then immediately add the recent 1.3-second trajectory."
@@ -460,6 +480,38 @@ struct BindingsEditor: View {
         Text("Train No gesture and at least two static gestures (10 samples each).")
           .foregroundStyle(.secondary)
       }.font(.system(size: 9, weight: .bold, design: .monospaced))
+      Text(state.trainingFeedback).font(.caption.bold())
+        .foregroundStyle(state.trainingFeedback.contains("WARNING") ? .orange : .cyan)
+      Text(
+        trainingGesture.category == .motion
+          ? "Dynamic samples are saved as trajectories and do not count toward the static Core ML model."
+          : (trainingGesture.category == .orientation
+            ? "Orientation samples retain wrist rotation and do not count toward the static Core ML model."
+            : state.trainingPrompt(for: trainingGesture))
+      ).font(.caption).foregroundStyle(.secondary)
+      DisclosureGroup("PERSONALIZED CORE ML READINESS", isExpanded: $showTrainingReadiness) {
+        VStack(alignment: .leading, spacing: 8) {
+          HStack {
+            readinessBadge(
+              "No gesture", count: state.coreMLReadiness.noGestureCount,
+              complete: state.coreMLReadiness.noGestureCount >= 10)
+            Text(state.coreMLReadiness.missingSummary).font(.caption.bold())
+            Spacer()
+            Button(tracker.personalizedModelStatus.contains("READY") ? "REBUILD MODEL" : "BUILD MODEL") {
+              tracker.trainPersonalizedModel(samples: state.handPoseTemplates)
+            }.disabled(!state.coreMLReadiness.canBuild)
+            Button("DELETE MODEL…", role: .destructive) { confirmDeleteModel = true }
+          }
+          LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 6)], spacing: 6) {
+            ForEach(state.coreMLReadiness.classes) { row in
+              readinessBadge(row.gesture.displayName, count: row.count, complete: row.complete)
+            }
+          }
+          Text(
+            "Only completed static classes are included. Incomplete static classes are ignored safely; dynamic and orientation samples never enable this model."
+          ).font(.caption2).foregroundStyle(.secondary)
+        }.padding(.top, 6)
+      }
       List {
         ForEach($state.bindings) { $binding in
           HStack {
@@ -478,6 +530,10 @@ struct BindingsEditor: View {
               ForEach(ActionKind.allCases) { Text($0.rawValue).tag($0) }
             }.frame(width: 150)
             TextField("Value / URL / command", text: $binding.value)
+            if let error = binding.validationError {
+              Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                .help(error)
+            }
             Button(role: .destructive) {
               state.bindings.removeAll { $0.id == binding.id }
             } label: {
@@ -485,7 +541,10 @@ struct BindingsEditor: View {
             }
           }
         }
-      }.frame(minHeight: 340)
+      }
+      .frame(minHeight: 340)
+      .simultaneousGesture(
+        DragGesture(minimumDistance: 8).onEnded { _ in JarboPerformance.actionsScrolled() })
       HStack {
         TextField("Name", text: $draft.name)
         Picker("Hand", selection: $draft.hand) {
@@ -505,7 +564,10 @@ struct BindingsEditor: View {
           state.bindings.append(draft)
           draft = .init(
             name: "New command", hand: .right, gesture: .openPalm, action: .missionControl)
-        }
+        }.disabled(draft.validationError != nil)
+      }
+      if let error = draft.validationError {
+        Text("Cannot add binding: \(error)").font(.caption).foregroundStyle(.orange)
       }
       HStack {
         Button("RESTORE ESSENTIAL PRESETS") { state.restoreEssentialControls() }
@@ -531,8 +593,29 @@ struct BindingsEditor: View {
       ).font(.caption).foregroundStyle(.secondary)
     }
     .pickerStyle(.menu)
+    .onAppear { JarboPerformance.actionsInteractive() }
+    .onChange(of: state.bindings) { _, _ in JarboPerformance.bindingEdited() }
+    .alert("Delete personalized Core ML model?", isPresented: $confirmDeleteModel) {
+      Button("Delete Model", role: .destructive) { tracker.deletePersonalizedModel() }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Your captured samples will be preserved so you can rebuild the model later.")
+    }
     .onDisappear { tracker.setConfigurationMode(false) }
     .padding(22).frame(minWidth: 1050, minHeight: 500)
+  }
+  private func readinessBadge(_ label: String, count: Int, complete: Bool) -> some View {
+    HStack(spacing: 5) {
+      Image(systemName: complete ? "checkmark.circle.fill" : "circle.dashed")
+        .foregroundStyle(complete ? .green : .orange)
+      Text(label).lineLimit(1)
+      Spacer(minLength: 4)
+      Text("\(count)/10").monospacedDigit()
+    }
+    .font(.system(size: 9, weight: .bold, design: .monospaced))
+    .padding(.horizontal, 7).padding(.vertical, 5)
+    .background((complete ? Color.green : Color.orange).opacity(0.10))
+    .clipShape(RoundedRectangle(cornerRadius: 5))
   }
 }
 

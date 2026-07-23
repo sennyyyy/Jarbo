@@ -1,8 +1,8 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import AppKit
 import Foundation
 import IOKit.ps
-import Speech
+@preconcurrency import Speech
 import Vision
 
 @MainActor final class SystemMonitor: ObservableObject {
@@ -36,7 +36,7 @@ import Vision
   }
 }
 
-final class VoiceService: NSObject, ObservableObject {
+@MainActor final class VoiceService: NSObject, ObservableObject {
   @Published var listening = false
   @Published var transcript = ""
   private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
@@ -48,7 +48,7 @@ final class VoiceService: NSObject, ObservableObject {
   func start() {
     SFSpeechRecognizer.requestAuthorization { [weak self] status in
       guard status == .authorized else { return }
-      DispatchQueue.main.async { self?.begin() }
+      Task { @MainActor [weak self] in self?.begin() }
     }
   }
   private func begin() {
@@ -65,17 +65,19 @@ final class VoiceService: NSObject, ObservableObject {
     try? engine.start()
     listening = true
     task = recognizer?.recognitionTask(with: request) { [weak self] result, error in
-      guard let self else { return }
-      if let result {
-        DispatchQueue.main.async {
-          self.transcript = result.bestTranscription.formattedString
-          if result.isFinal {
-            self.onCommand?(self.transcript.lowercased())
-            self.stop()
-          }
+      let text = result?.bestTranscription.formattedString
+      let isFinal = result?.isFinal ?? false
+      let failed = error != nil
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        if let text { self.transcript = text }
+        if isFinal {
+          self.onCommand?(self.transcript.lowercased())
+          self.stop()
+        } else if failed {
+          self.stop()
         }
       }
-      if error != nil { DispatchQueue.main.async { self.stop() } }
     }
   }
   func stop() {

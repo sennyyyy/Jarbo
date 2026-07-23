@@ -15,6 +15,7 @@ fi
 VERSION="$1"
 TAG="v$VERSION"
 NOTES="release-notes/$TAG.md"
+STATUS_FILE="release-status/$TAG"
 if git rev-parse "$TAG" >/dev/null 2>&1; then
   print -u2 "Release $TAG already exists."
   exit 65
@@ -23,9 +24,27 @@ if [[ ! -f "$NOTES" ]]; then
   print -u2 "Missing $NOTES. Add Working and Known limitations sections before publishing."
   exit 67
 fi
+if [[ ! -f "$STATUS_FILE" ]]; then
+  print -u2 "Missing $STATUS_FILE. Record HOLD or APPROVED before publishing."
+  exit 69
+fi
+RELEASE_STATUS="$(tr -d '[:space:]' < "$STATUS_FILE")"
+if [[ "$RELEASE_STATUS" != "APPROVED" ]]; then
+  print -u2 "Release $TAG is blocked: $STATUS_FILE is ${RELEASE_STATUS:-empty}, not APPROVED."
+  exit 69
+fi
 if ! git remote get-url origin >/dev/null 2>&1; then
   print -u2 "No origin remote is configured. Add one with: git remote add origin <repository-url>"
   exit 66
+fi
+CURRENT_BRANCH="$(git branch --show-current)"
+if [[ "$CURRENT_BRANCH" != "main" ]]; then
+  print -u2 "Releases must be published from main; current branch is $CURRENT_BRANCH."
+  exit 68
+fi
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  print -u2 "Release requires a clean worktree. Commit, stash, or remove unrelated changes first."
+  exit 70
 fi
 
 CURRENT_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Info.plist 2>/dev/null || print 0)
@@ -33,11 +52,11 @@ NEXT_BUILD=$((CURRENT_BUILD + 1))
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" Info.plist
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEXT_BUILD" Info.plist
 
-./build-app.sh
+./verify.sh
 ARCHIVE="dist/Jarbo-$VERSION.zip"
 ditto -c -k --norsrc --keepParent dist/Jarbo.app "$ARCHIVE"
 
-git add .github .gitignore Info.plist Package.swift README.md Sources build-app.sh docs patch-sdk-interfaces.sh release-notes release.sh
+git add -- Info.plist
 git commit -m "Release $TAG"
 git tag -a "$TAG" -F "$NOTES"
 git push origin HEAD

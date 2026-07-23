@@ -12,7 +12,14 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Enforce release approval
+        run: |
+          status_file="release-status/$GITHUB_REF_NAME"
+          test -f "$status_file"
+          test "$(tr -d '[:space:]' < "$status_file")" = "APPROVED"
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -20,5 +27,6 @@ jobs:
           test -f "release-notes/$GITHUB_REF_NAME.md"
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
+            --prerelease \
             --title "ALPHA Jarbo ${GITHUB_REF_NAME#v}" \
             --notes-file "release-notes/$GITHUB_REF_NAME.md"

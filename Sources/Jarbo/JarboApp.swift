@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import AVFoundation
 import SwiftUI
 
 @main struct JarboApp: App {
@@ -7,14 +8,18 @@ import SwiftUI
   var body: some Scene { Settings { EmptyView() } }
 }
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
+  NSWindowDelegate
+{
   let state = AppState(), tracker = HandTrackingService(), automation = AutomationService(),
     monitor = SystemMonitor(), voice = VoiceService(), analyzer = ImageAnalyzer(),
     imageGen = ImageGenerationService(), gestureClassifier = PersonalizedGestureClassifier()
   var window: NSWindow!
   var statusItem: NSStatusItem!
   private var hudMenuItem: NSMenuItem!
-  private var trackingMenuItem: NSMenuItem!
+  private var controlsMenuItem: NSMenuItem!
+  private var cameraMenuItem: NSMenuItem!
+  private var cameraRecoveryMenuItem: NSMenuItem!
   private var modelMenuItem: NSMenuItem!
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.regular)
@@ -22,7 +27,14 @@ import SwiftUI
     automation.sensitivityProvider = { [weak state] in state?.pointerSensitivity ?? 0.5 }
     tracker.automation = automation
     tracker.personalizedClassifier = gestureClassifier
-    if gestureClassifier.isAvailable { tracker.personalizedModelStatus = "CORE ML READY" }
+    if gestureClassifier.isAvailable, let error = gestureClassifier.lastErrorMessage {
+      tracker.personalizedModelStatus =
+        "CORE ML READY · LAST BUILD FAILED · \(error.uppercased())"
+    } else if gestureClassifier.isAvailable {
+      tracker.personalizedModelStatus = "CORE ML READY"
+    } else if let error = gestureClassifier.lastErrorMessage {
+      tracker.personalizedModelStatus = "LAST BUILD FAILED · \(error.uppercased())"
+    }
     tracker.roleProvider = { [weak state] in
       (state?.leftRole ?? .pointer, state?.rightRole ?? .controls)
     }
@@ -40,12 +52,16 @@ import SwiftUI
       backing: .buffered, defer: false)
     window.title = "Jarbo"
     window.titlebarAppearsTransparent = true
+    window.level = .normal
+    window.delegate = self
     window.contentView = NSHostingView(rootView: root)
     window.makeKeyAndOrderFront(nil)
-    window.collectionBehavior = [.canJoinAllSpaces, .fullScreenPrimary]
+    window.collectionBehavior = [.managed, .participatesInCycle, .fullScreenPrimary]
     setupMenu()
     NotificationCenter.default.addObserver(
-      self, selector: #selector(toggleHUD), name: .jarboToggleHUD, object: nil)
+      self, selector: #selector(handlePassiveHUDToggle), name: .jarboToggleHUD, object: nil)
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(toggleCamera), name: .jarboToggleCamera, object: nil)
     requestAccessibility()
   }
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -57,16 +73,23 @@ import SwiftUI
   }
   private func setupMenu() {
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    statusItem.button?.image = NSImage(
-      systemSymbolName: "circle.hexagongrid.fill", accessibilityDescription: "Jarbo")
+    statusItem.button?.image = JarboMenuIcon.make()
+    statusItem.button?.setAccessibilityLabel("Jarbo controls")
     let menu = NSMenu()
     menu.delegate = self
     hudMenuItem = menuItem("Hide Jarbo HUD", action: #selector(toggleHUD), key: "j")
     menu.addItem(hudMenuItem)
     menu.addItem(menuItem("Configure Controls…", action: #selector(showControls), key: ","))
-    trackingMenuItem = menuItem(
-      "Pause Hand Controls", action: #selector(toggleTracking), key: "")
-    menu.addItem(trackingMenuItem)
+    menu.addItem(.separator())
+    controlsMenuItem = menuItem(
+      "Pause Hand Controls", action: #selector(toggleControls), key: "")
+    menu.addItem(controlsMenuItem)
+    cameraMenuItem = menuItem("Turn Camera On", action: #selector(toggleCamera), key: "")
+    menu.addItem(cameraMenuItem)
+    cameraRecoveryMenuItem = menuItem(
+      "Retry Camera", action: #selector(recoverCamera), key: "")
+    cameraRecoveryMenuItem.isHidden = true
+    menu.addItem(cameraRecoveryMenuItem)
     modelMenuItem = NSMenuItem(title: tracker.personalizedModelStatus, action: nil, keyEquivalent: "")
     modelMenuItem.isEnabled = false
     menu.addItem(modelMenuItem)
@@ -81,13 +104,44 @@ import SwiftUI
   }
   func menuNeedsUpdate(_ menu: NSMenu) {
     hudMenuItem.title = window.isVisible ? "Hide Jarbo HUD" : "Show Jarbo HUD"
-    trackingMenuItem.title = tracker.running ? "Pause Hand Controls" : "Resume Hand Controls"
+    controlsMenuItem.title = tracker.controlsEnabled ? "Pause Hand Controls" : "Resume Hand Controls"
+    controlsMenuItem.image = NSImage(
+      systemSymbolName: tracker.controlsEnabled ? "hand.raised.fill" : "hand.raised.slash.fill",
+      accessibilityDescription: tracker.controlsStatus)
+    controlsMenuItem.toolTip = tracker.controlsStatus
+    // The persisted intent owns this switch. Actual capture state is displayed by the icon,
+    // so permission failure cannot leave a menu item that only ever asks to start again.
+    cameraMenuItem.title = state.cameraEnabled ? "Turn Camera Off" : "Turn Camera On"
+    cameraMenuItem.image = NSImage(
+      systemSymbolName: tracker.running ? "video.fill" : "video.slash",
+      accessibilityDescription: tracker.cameraState.label)
+    cameraMenuItem.toolTip = tracker.cameraState.label
+    cameraMenuItem.isEnabled = true
+    cameraRecoveryMenuItem.isHidden = true
+    if tracker.cameraState == .permissionDenied {
+      cameraRecoveryMenuItem.title = "Open Camera Privacy Settings…"
+      cameraRecoveryMenuItem.image = NSImage(
+        systemSymbolName: "gearshape.fill", accessibilityDescription: nil)
+      cameraRecoveryMenuItem.isHidden = false
+    } else if tracker.cameraState == .unavailable, state.cameraEnabled {
+      cameraRecoveryMenuItem.title = "Retry Camera"
+      cameraRecoveryMenuItem.image = NSImage(
+        systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
+      cameraRecoveryMenuItem.isHidden = false
+    }
     modelMenuItem.title = tracker.personalizedModelStatus
   }
   @objc private func showHUD() {
+    presentHUD(activate: true)
+  }
+  private func presentHUD(activate: Bool) {
     state.showHUD = true
-    window.makeKeyAndOrderFront(nil)
-    NSApp.activate(ignoringOtherApps: true)
+    if activate {
+      window.makeKeyAndOrderFront(nil)
+      NSApp.activate(ignoringOtherApps: true)
+    } else {
+      window.orderFront(nil)
+    }
   }
   @objc private func toggleHUD() {
     if window.isVisible {
@@ -96,20 +150,53 @@ import SwiftUI
       showHUD()
     }
   }
+  @objc private func handlePassiveHUDToggle() {
+    if window.isVisible { window.orderOut(nil) } else { presentHUD(activate: false) }
+  }
   @objc private func showControls() {
     showHUD()
     NotificationCenter.default.post(name: .jarboShowActions, object: nil)
   }
-  @objc private func toggleTracking() {
-    tracker.running ? tracker.stop() : tracker.start()
+  @objc private func toggleControls() {
+    tracker.setControlsEnabled(!tracker.controlsEnabled)
+    state.log(tracker.controlsEnabled ? "HAND CONTROLS RESUMED" : "HAND CONTROLS PAUSED")
+  }
+  @objc private func toggleCamera() {
+    if state.cameraEnabled {
+      state.cameraEnabled = false
+      tracker.stop()
+    } else {
+      state.cameraEnabled = true
+      tracker.start()
+    }
+  }
+  @objc private func recoverCamera() {
+    if tracker.cameraState == .permissionDenied {
+      openCameraPrivacySettings()
+    } else {
+      state.cameraEnabled = true
+      tracker.start()
+    }
+  }
+  private func openCameraPrivacySettings() {
+    guard
+      let url = URL(
+        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")
+    else { return }
+    NSWorkspace.shared.open(url)
+  }
+  func applicationDidBecomeActive(_ notification: Notification) {
+    guard state.cameraEnabled, tracker.cameraState == .permissionDenied,
+      AVCaptureDevice.authorizationStatus(for: .video) == .authorized
+    else { return }
+    tracker.start()
   }
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
     if !flag { showHUD() }
     return true
   }
   private func requestAccessibility() {
-    let options =
-      [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+    let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
     _ = AXIsProcessTrustedWithOptions(options)
   }
   private func handleVoice(_ text: String) {
